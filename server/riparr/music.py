@@ -75,8 +75,90 @@ TOOLS = {
     "cd-info": "libcdio-utils",
     "flac": "flac",
     "lame": "lame",
+    "opusenc": "opus-tools",
+    "oggenc": "vorbis-tools",
     "bsdtar": "libarchive-tools",
+    "ffmpeg": "ffmpeg",
 }
+
+# ffmpeg is the only large one -- a hundred and more megabytes of codec libraries for
+# two formats -- so it is installed only on a box whose owner picked AAC or ALAC. The
+# rest are a few hundred kilobytes each and always installed.
+ON_DEMAND = {"ffmpeg"}
+
+
+# ─────────────────────────────── formats ───────────────────────────────
+#
+# Every format the settings page offers, and everything that depends on the choice:
+# the file extension, the encoder, the quality choices and how big the album will come
+# out (for preflight). One table, so the page, the encoder and the size estimate cannot
+# disagree about what "MP3, 192" means.
+#
+# Quality values are strings, stored as one setting (`music_quality`). A value that does
+# not belong to the chosen format -- MP3 picked after the quality was set for Opus --
+# falls back to that format's default rather than failing a rip.
+
+FORMATS = {
+    "flac": {"ext": ".flac", "tool": "flac", "label": "FLAC", "lossless": True,
+             "default": "5",
+             "qualities": [("5", "Standard (default)"),
+                           ("8", "Smallest files, slowest"),
+                           ("0", "Fastest, bigger files")],
+             "ratio": {"0": 0.68, "5": 0.62, "8": 0.60}},
+    "alac": {"ext": ".m4a", "tool": "ffmpeg", "label": "ALAC", "lossless": True,
+             "default": "", "qualities": [], "ratio": {"": 0.64}},
+    "wav":  {"ext": ".wav", "tool": None, "label": "WAV", "lossless": True,
+             "default": "", "qualities": [], "ratio": {"": 1.0}},
+    "mp3":  {"ext": ".mp3", "tool": "lame", "label": "MP3", "lossless": False,
+             "default": "v0",
+             "qualities": [("v0", "VBR V0, about 245 kbps (default)"),
+                           ("v2", "VBR V2, about 190 kbps"),
+                           ("320", "320 kbps constant"), ("256", "256 kbps constant"),
+                           ("192", "192 kbps constant"), ("128", "128 kbps constant")],
+             "ratio": {"v0": 245, "v2": 190, "320": 320, "256": 256, "192": 192,
+                       "128": 128}},
+    "aac":  {"ext": ".m4a", "tool": "ffmpeg", "label": "AAC", "lossless": False,
+             "default": "256",
+             "qualities": [("256", "256 kbps (default)"), ("320", "320 kbps"),
+                           ("192", "192 kbps"), ("128", "128 kbps")],
+             "ratio": {"320": 320, "256": 256, "192": 192, "128": 128}},
+    "opus": {"ext": ".opus", "tool": "opusenc", "label": "Opus", "lossless": False,
+             "default": "160",
+             "qualities": [("160", "160 kbps (default)"), ("256", "256 kbps"),
+                           ("192", "192 kbps"), ("128", "128 kbps"), ("96", "96 kbps")],
+             "ratio": {"256": 256, "192": 192, "160": 160, "128": 128, "96": 96}},
+    "ogg":  {"ext": ".ogg", "tool": "oggenc", "label": "Ogg Vorbis", "lossless": False,
+             "default": "6",
+             "qualities": [("6", "Quality 6, about 192 kbps (default)"),
+                           ("8", "Quality 8, about 256 kbps"),
+                           ("10", "Quality 10, about 500 kbps"),
+                           ("5", "Quality 5, about 160 kbps"),
+                           ("3", "Quality 3, about 112 kbps")],
+             "ratio": {"10": 500, "8": 256, "6": 192, "5": 160, "3": 112}},
+}
+CD_KBPS = 1411.2
+
+
+def fmt_of(value):
+    """A format the box knows, whatever the setting says."""
+    value = (value or "flac").lower()
+    return value if value in FORMATS else "flac"
+
+
+def quality_of(fmt, value):
+    """The quality to use for this format: the setting if it is one of this format's
+    choices, otherwise the format's default."""
+    spec = FORMATS[fmt_of(fmt)]
+    allowed = {q for q, _ in spec["qualities"]}
+    value = str(value or "")
+    return value if value in allowed else spec["default"]
+
+
+def size_ratio(fmt, quality):
+    """Fraction of the CD's PCM the encoded album comes to."""
+    spec = FORMATS[fmt_of(fmt)]
+    r = spec["ratio"].get(quality_of(fmt, quality), 1.0)
+    return r if spec["lossless"] else r / CD_KBPS
 
 # What counts as music on a data disc.
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".wma",
@@ -223,7 +305,11 @@ def parse_cdtext(text):
 
 def _clean_text(s):
     s = (s or "").replace("\x00", "").strip()
-    return re.sub(r"\s+", " ", s)
+    s = re.sub(r"\s+", " ", s)
+    # A field with no letter or digit in it is what CD-Text looks like after a burning
+    # program lost the character set -- a real disc in testing had a performer of "?".
+    # As a name it is worse than nothing: nothing falls back to the album artist.
+    return s if re.search(r"\w", s) else ""
 
 
 # ─────────────────────────────── MusicBrainz ───────────────────────────────
@@ -535,10 +621,29 @@ def identify(toc, device, s, remembered=None, log=None):
     return plan
 
 
+def apply_name(plan, name):
+    """Name an unknown album from what somebody typed. "Artist - Album" is split at the
+    first dash with spaces round it (any kind of dash); anything else is the album."""
+    name = _clean_text(name)
+    m = re.match(r"^(.+?)\s+[-\u2013\u2014]\s+(.+)$", name)
+    artist, album = (m.group(1), m.group(2)) if m else ("", name)
+    plan["album"] = album or plan.get("album")
+    if artist:
+        plan["album_artist"] = artist
+        for row in plan.get("tracks") or []:
+            if row.get("artist") in ("", "Unknown Artist", None):
+                row["artist"] = artist
+    plan["unknown"] = False
+    plan["source"] = "typed"
+    plan["warnings"] = [w for w in plan.get("warnings") or []
+                        if not w.startswith("Nothing knew this disc")]
+    return plan
+
+
 # ─────────────────────────────── naming ───────────────────────────────
 
 DEFAULT_TEMPLATE = "{AlbumArtist}/{Album} ({Year})/{DiscTrack} - {Title}"
-EXTENSIONS = {"flac": ".flac", "mp3": ".mp3"}
+EXTENSIONS = {k: v["ext"] for k, v in FORMATS.items()}
 
 _TRACK_TOKEN = re.compile(r"\{(Track|Disc)(?::(0+))?\}")
 
@@ -633,10 +738,59 @@ def _tag_value(v):
     return re.sub(r"[\r\n\x00]+", " ", str(v or "")).strip()
 
 
-def encode_command(fmt, wav, out, plan, row, cover=None):
+def _mp4_tags(plan, row):
+    """The tags ffmpeg can put in an .m4a. MP4's MusicBrainz tags are iTunes freeform
+    atoms ffmpeg has no way to write, so AAC and ALAC carry names, numbers and the cover
+    -- which is what Apple's apps and every music server match on -- and not the IDs."""
+    tracks = len(plan.get("tracks") or [])
+    tags = [("title", row.get("title")), ("artist", row.get("artist")),
+            ("album", plan.get("album")), ("album_artist", plan.get("album_artist")),
+            ("track", "%d/%d" % (row["position"], tracks)),
+            ("disc", "%d/%d" % (plan.get("disc") or 1, plan.get("discs") or 1)),
+            ("date", plan.get("date") or plan.get("year")),
+            ("compilation", "1" if plan.get("compilation") else "")]
+    return [(k, _tag_value(v)) for k, v in tags if _tag_value(v)]
+
+
+def encode_command(fmt, wav, out, plan, row, cover=None, quality=None):
     """The encoder's argv. Exposed so the tests can read it."""
+    fmt = fmt_of(fmt)
+    q = quality_of(fmt, quality)
+    if fmt == "wav":
+        # WAV is the CD's own audio with a header. There is no tag format every player
+        # reads in a WAV, so none is written: the folder and file name carry the names.
+        return ["cp", wav, out]
+    if fmt in ("aac", "alac"):
+        cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+               "-i", wav]
+        if cover:
+            cmd += ["-i", cover, "-map", "0:a", "-map", "1:v", "-c:v", "copy",
+                    "-disposition:v:0", "attached_pic"]
+        else:
+            cmd += ["-map", "0:a"]
+        cmd += (["-c:a", "aac", "-b:a", "%sk" % q] if fmt == "aac" else ["-c:a", "alac"])
+        for k, v in _mp4_tags(plan, row):
+            cmd += ["-metadata", "%s=%s" % (k, v)]
+        return cmd + ["-movflags", "+faststart", "-f", "ipod", out]
+    if fmt in ("opus", "ogg"):
+        tags = vorbis_tags(plan, row)
+        if fmt == "opus":
+            cmd = ["opusenc", "--quiet", "--bitrate", q]
+            for k, v in tags:
+                cmd += ["--comment", "%s=%s" % (k, v)]
+            if cover:
+                cmd += ["--picture", cover]
+            return cmd + [wav, out]
+        # oggenc has no way to embed a picture: the only route is a base64 comment the
+        # size of the image, and a cover that size is past Linux's limit on a single
+        # argument. The cover beside the tracks is what servers read for Ogg anyway.
+        cmd = ["oggenc", "--quiet", "-q", q, "-o", out]
+        for k, v in tags:
+            cmd += ["-c", "%s=%s" % (k, v)]
+        return cmd + [wav]
     if fmt == "mp3":
-        cmd = ["lame", "--quiet", "--nohist", "-V", "0", "--id3v2-only", "--id3v2-utf16",
+        rate = ["-V", q[1:]] if q.startswith("v") else ["-b", q, "--cbr"]
+        cmd = ["lame", "--quiet", "--nohist"] + rate + ["--id3v2-only", "--id3v2-utf16",
                "--tt", row.get("title") or "", "--ta", row.get("artist") or "",
                "--tl", plan.get("album") or "",
                "--tn", "%d/%d" % (row["position"], len(plan.get("tracks") or [])),
@@ -661,19 +815,19 @@ def encode_command(fmt, wav, out, plan, row, cover=None):
         if cover:
             cmd += ["--ti", cover]
         return cmd + [wav, out]
-    cmd = ["flac", "--silent", "-5", "-f", "-o", out]
+    cmd = ["flac", "--silent", "-%s" % q, "-f", "-o", out]
     cmd += ["--tag=%s=%s" % kv for kv in vorbis_tags(plan, row)]
     if cover:
         cmd.append("--picture=%s" % cover)
     return cmd + [wav]
 
 
-def encode(fmt, wav, out, plan, row, cover=None):
+def encode(fmt, wav, out, plan, row, cover=None, quality=None):
     """Start encoding one track. Returns the Popen; `finish_encode` collects it.
 
     Asynchronous because the drive is the slow part: the next track is read while this
     one encodes, which takes the encode time out of every track but the last."""
-    cmd = encode_command(fmt, wav, out, plan, row, cover)
+    cmd = encode_command(fmt, wav, out, plan, row, cover, quality)
     cmd[0] = shutil.which(cmd[0]) or cmd[0]
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                             text=True, errors="replace")
@@ -931,6 +1085,9 @@ def _tree_bytes(root):
 
 RUNDIR = "/run/riparr"
 REQUEST = os.path.join(RUNDIR, "cdtools.request")
+# Asks for ffmpeg as well. Its existence is the whole message: the root side reads
+# nothing from it, it only decides whether one more fixed Debian package is installed.
+FFMPEG_REQUEST = os.path.join(RUNDIR, "cdtools-ffmpeg.request")
 STATE = os.path.join(RUNDIR, "cdtools.state")
 BRIDGE_UNIT = "/etc/systemd/system/riparr-cdtools.path"
 
@@ -944,10 +1101,18 @@ def tools():
     return have
 
 
+def needs(fmt="flac", data=False):
+    """The binaries a rip in this format needs."""
+    if data:
+        return ["bsdtar"]
+    tool = FORMATS[fmt_of(fmt)]["tool"]
+    return ["cd-paranoia"] + ([tool] if tool else [])
+
+
 def ready(fmt="flac", data=False):
     """(True, "") if a disc of this kind can be ripped now, else (False, what is missing)."""
     have = tools()
-    need = ["bsdtar"] if data else ["cd-paranoia", "lame" if fmt == "mp3" else "flac"]
+    need = needs(fmt, data)
     missing = [n for n in need if not have.get(n)]
     if not missing:
         return True, ""
@@ -971,23 +1136,37 @@ def bridge_available():
         RUNDIR, os.W_OK)
 
 
-def status():
-    """Everything the settings page shows about the music tools."""
+def _base_ready(have=None):
+    """The always-installed tools are all here."""
+    have = have or tools()
+    return all(have.get(t) for t in TOOLS if t not in ON_DEMAND)
+
+
+def status(fmt=None):
+    """Everything the settings page shows about the music tools, for the chosen format.
+
+    `ready` is "a CD can be ripped in this format now". `extra` names a large optional
+    tool the format needs and the box does not have yet -- the page says so, because
+    "AAC needs a 150 MB install" is worth knowing before the first CD waits for it."""
     have = tools()
     st = _read_state() or {}
-    ok, _ = ready("flac")
-    return {"ready": ok and have.get("lame") and have.get("bsdtar"), "tools": have,
-            "installing": installing(), "phase": st.get("phase"),
+    fmt = fmt_of(fmt)
+    ok, missing = ready(fmt)
+    tool = FORMATS[fmt]["tool"]
+    return {"ready": bool(ok and _base_ready(have)), "format": fmt, "tools": have,
+            "extra": tool if tool in ON_DEMAND and not have.get(tool) else None,
+            "missing": missing, "installing": installing(), "phase": st.get("phase"),
             "message": st.get("message"), "detail": st.get("detail"),
             "can_install": P.MOCK or bridge_available()}
 
 
-def request_install():
-    """Ask the root side to install the CD tools. One empty file, like every other
-    privileged action: the request carries nothing the root side reads."""
+def request_install(fmt=None):
+    """Ask the root side to install the CD tools, and ffmpeg too if this format needs
+    it. Empty files, like every other privileged action: the request carries nothing
+    the root side reads."""
     if P.MOCK:
         return {"ok": True, "message": "Off-hardware: nothing to install."}
-    if status()["ready"]:
+    if status(fmt)["ready"]:
         return {"ok": True, "message": "Already installed."}
     if installing():
         return {"ok": True, "message": "Already installing."}
@@ -996,8 +1175,11 @@ def request_install():
                 "error": "This box is missing the part that installs them. "
                          "System → Tasks can install the system parts."}
     try:
-        # A stale state file from a failed attempt would read as "already tried" to
-        # anything that checks it; the root script rewrites it as soon as it starts.
+        # ffmpeg's request first: the path unit fires on the main one, and the root
+        # script looks for this as it starts.
+        if status(fmt)["extra"]:
+            with open(FFMPEG_REQUEST, "w") as f:
+                f.write("%d\n" % int(time.time()))
         with open(REQUEST, "w") as f:
             f.write("%d\n" % int(time.time()))
     except OSError as e:
@@ -1028,7 +1210,7 @@ def wait_for_tools(fmt, data, cancelled, on_wait=None, timeout=25 * 60):
             if st.get("phase") == "error" and not asked:
                 return False, "the CD tools couldn't be installed: %s" % (
                     st.get("message") or "unknown error")
-            r = request_install()
+            r = request_install(fmt)
             asked = True
             if not r.get("ok"):
                 return False, r.get("error") or "the CD tools aren't installed"
@@ -1054,7 +1236,11 @@ def start():
     def later():
         time.sleep(120)
         try:
-            if status()["ready"] or _read_state() is not None:
+            # Asked again after an update that added a tool, even though an earlier
+            # install this boot finished -- but never after one failed, which would
+            # loop on every restart.
+            st = _read_state() or {}
+            if _base_ready() or installing() or st.get("phase") == "error":
                 return
             if bridge_available():
                 request_install()

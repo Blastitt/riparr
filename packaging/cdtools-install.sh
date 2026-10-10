@@ -8,8 +8,11 @@
 #
 #   cd-paranoia       reads the audio, re-reading anything that does not verify
 #   libcdio-utils     cd-info, which reads the CD-Text burning software writes
-#   flac, lame        the encoders
+#   flac, lame        the FLAC and MP3 encoders
+#   opus-tools        opusenc, for Opus
+#   vorbis-tools      oggenc, for Ogg Vorbis
 #   libarchive-tools  bsdtar, which copies MP3s off a data CD without mounting it
+#   ffmpeg            AAC and ALAC -- ONLY when asked for (see below)
 #
 # cd-paranoia rather than Xiph's cdparanoia: it is the same program ported onto libcdio,
 # it is the version Riparr was tested against (10.2+2.0.2, identical in Debian trixie
@@ -52,6 +55,8 @@ declare -A PKG=(
   [cd-info]=libcdio-utils
   [flac]=flac
   [lame]=lame
+  [opusenc]=opus-tools
+  [oggenc]=vorbis-tools
   [bsdtar]=libarchive-tools
 )
 
@@ -59,6 +64,18 @@ need=()
 for bin in "${!PKG[@]}"; do
   command -v "$bin" >/dev/null 2>&1 || need+=("${PKG[$bin]}")
 done
+
+# ffmpeg is a hundred and more megabytes of codec libraries, wanted only for AAC and
+# ALAC, so it is installed only when the web service asked for it. riparr-cdtools.service
+# renames the service's request to .wanted before this runs, so the path unit cannot
+# fire on it again; only its existence is read, never its contents.
+WANT_FFMPEG="$RUN/cdtools-ffmpeg.wanted"
+wanted_ffmpeg=0
+if [ -e "$WANT_FFMPEG" ]; then
+  rm -f "$WANT_FFMPEG"
+  wanted_ffmpeg=1
+  command -v ffmpeg >/dev/null 2>&1 || need+=(ffmpeg)
+fi
 
 if [ ${#need[@]} -eq 0 ]; then
   say done 1 "Music CDs are ready." ""
@@ -89,8 +106,11 @@ done
 if [ ${#missing[@]} -gt 0 ]; then
   fail "The music CD tools couldn't be installed (${missing[*]} missing)."
 fi
+if [ "$wanted_ffmpeg" = 1 ] && ! command -v ffmpeg >/dev/null 2>&1; then
+  fail "AAC and ALAC need ffmpeg, which couldn't be installed. FLAC, MP3, Opus and Ogg still work."
+fi
 optional=()
-for bin in cd-info lame bsdtar; do
+for bin in cd-info lame opusenc oggenc bsdtar; do
   command -v "$bin" >/dev/null 2>&1 || optional+=("$bin")
 done
 if [ ${#optional[@]} -gt 0 ]; then

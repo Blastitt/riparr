@@ -73,6 +73,8 @@ A Blu-ray drive reads CDs too, so there's nothing to buy.
 - **Burned CDs work.** MusicBrainz won't know a mix you made, but the burning software
   usually wrote the names onto the disc and Riparr reads them. Failing that you get
   `Unknown Artist/Unknown Album [8a0b3c0d]/01 - Track 01.flac`, which you can rename later.
+  Set "When a disc can't be identified" to **Ask me** and it asks for "Artist - Album"
+  instead, and remembers it if the CD comes back.
 - **A burned data CD full of MP3s** is copied as it is, into `Music/<disc name>/`.
 - **A scratched track costs that track, not the album.** Riparr re-reads anything that
   doesn't verify. If a track still won't read it's left out, the job says which, and the

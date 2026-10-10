@@ -194,7 +194,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends cd-paranoia libcdio-utils \
-            flac lame libarchive-tools xorriso ffmpeg >/dev/null
+            flac lame opus-tools vorbis-tools libarchive-tools xorriso ffmpeg >/dev/null
           python server/music-pipeline.test.py
 
       # The card write's data-in, data-out pieces: sector arithmetic, device names,

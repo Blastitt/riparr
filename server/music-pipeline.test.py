@@ -75,7 +75,8 @@ def fixture(name):
         return json.load(f)
 
 
-for tool in ("cd-paranoia", "cd-info", "flac", "metaflac", "lame", "bsdtar"):
+for tool in ("cd-paranoia", "cd-info", "flac", "metaflac", "lame", "opusenc", "oggenc",
+             "ffmpeg", "ffprobe", "bsdtar"):
     if not shutil.which(tool):
         print("  FAIL %s is not installed; this test needs the real tools" % tool)
         failures.append(tool)
@@ -517,23 +518,105 @@ check("the album still finishes", bj["state"], "done")
 check("every track is there", len([f for f in share_files() if f.endswith(".flac")]), 3)
 contains("and it says the art wasn't embedded", bj["warning"], "cover")
 
-print("MP3 instead of FLAC")
+print("every format, with its tags, its cover and the right extension")
+
+
+def probe(path):
+    """ffprobe's view of a file: its codec, tags (lower-cased) and whether it holds a
+    picture. ffprobe reads all seven formats, so one reader checks every encoder."""
+    out = json.loads(subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries",
+         "stream=codec_name,codec_type:stream_disposition=attached_pic:format_tags:"
+         "stream_tags", "-of", "json", path], capture_output=True, text=True).stdout
+        or "{}")
+    tags = {k.lower(): v for k, v in (out.get("format", {}).get("tags") or {}).items()}
+    for st in out.get("streams", []):              # Ogg and Opus keep tags per stream
+        tags.update({k.lower(): v for k, v in (st.get("tags") or {}).items()})
+    audio = [st["codec_name"] for st in out.get("streams", [])
+             if st.get("codec_type") == "audio"]
+    pic = any(st.get("codec_type") == "video" for st in out.get("streams", []))
+    return (audio[0] if audio else None), tags, pic
+
+
+def pcm_of(path):
+    raw = os.path.join(_tmp, "pcm.raw")
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", path, "-f", "s16le",
+                    "-ac", "2", "-ar", "44100", raw], check=True)
+    with open(raw, "rb") as f:
+        return f.read()
+
+
+EXPECT = {   # format: (extension, codec, carries tags, carries the cover)
+    "flac": (".flac", "flac", True, True), "alac": (".m4a", "alac", True, True),
+    "wav": (".wav", "pcm_s16le", False, False), "mp3": (".mp3", "mp3", True, True),
+    "aac": (".m4a", "aac", True, True), "opus": (".opus", "opus", True, True),
+    "ogg": (".ogg", "vorbis", True, False),
+}
+answering(lambda path, params: mb_for_image(did=IMG_ID)
+          if path == "discid/" + IMG_ID else None)
+for fmt, (ext, codec, tagged, pictured) in EXPECT.items():
+    fresh_share()
+    db.set("music_format", fmt)
+    db.set("music_quality", "")
+    fj, _ = run_disc(force=True)
+    check("%s: finished" % fmt, (fj or {}).get("state"), "done")
+    names = [f for f in share_files() if not f.endswith("cover.jpg")]
+    check("%s: three %s files" % (fmt, ext), [n.endswith(ext) for n in names],
+          [True, True, True])
+    if not names:
+        continue
+    path = os.path.join(SH.MOCK_SHARE_ROOT, "nas/Media/Music", names[0])
+    got_codec, t, pic = probe(path)
+    check("%s: really %s inside" % (fmt, codec), got_codec, codec)
+    if tagged:
+        check("%s: title, album artist, track" % fmt,
+              (t.get("title"), t.get("album_artist") or t.get("albumartist"),
+               (t.get("track") or t.get("tracknumber") or "").split("/")[0]),
+              ("Real Title 1", "Image Artist", "1"))
+    check("%s: cover %s" % (fmt, "embedded" if pictured else "beside it only"), pic,
+          pictured)
+    if fmt in ("flac", "alac", "wav"):
+        check("%s: decodes to the disc's exact audio" % fmt, pcm_of(path) == want_pcm, True)
+db.set("music_format", "flac")
+
+print("quality settings reach the encoder")
+cmd = MU.encode_command("mp3", "in.wav", "out.mp3", {"tracks": [{}]}, {"position": 1},
+                        quality="320")
+check("MP3 320 is constant 320", cmd[cmd.index("-b") + 1:cmd.index("-b") + 3],
+      ["320", "--cbr"])
+cmd = MU.encode_command("mp3", "in.wav", "out.mp3", {"tracks": [{}]}, {"position": 1},
+                        quality="v2")
+check("MP3 V2 is VBR 2", cmd[cmd.index("-V") + 1], "2")
+cmd = MU.encode_command("opus", "in.wav", "o.opus", {"tracks": [{}]}, {"position": 1},
+                        quality="v2")
+check("a quality from another format falls back to this one's default",
+      cmd[cmd.index("--bitrate") + 1], "160")
+cmd = MU.encode_command("flac", "in.wav", "o.flac", {"tracks": [{}]}, {"position": 1},
+                        quality="8")
+check("FLAC level 8", "-8" in cmd, True)
 fresh_share()
 db.set("music_format", "mp3")
-mj, _ = run_disc(force=True)
-check("finished", mj["state"], "done")
-check("MP3 files", [f for f in share_files() if f.endswith(".mp3")],
-      [w.replace(".flac", ".mp3") for w in want[:3]])
-probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags",
-                        "-of", "json", os.path.join(SH.MOCK_SHARE_ROOT, "nas/Media/Music",
-                                                     want[0].replace(".flac", ".mp3"))],
-                       capture_output=True, text=True) if shutil.which("ffprobe") else None
-if probe:
-    ptags = {k.lower(): v for k, v in json.loads(probe.stdout or "{}").get(
-        "format", {}).get("tags", {}).items()}
-    check("ID3: title and track", (ptags.get("title"), ptags.get("track")),
-          ("Real Title 1", "1/3"))
+db.set("music_quality", "128")
+small, _ = run_disc(force=True)
+db.set("music_quality", "320")
+big, _ = run_disc(force=True)
+check("128 kbps really is smaller than 320", small["bytes_total"] < big["bytes_total"],
+      True)
 db.set("music_format", "flac")
+db.set("music_quality", "")
+
+print("an unknown format setting rips FLAC rather than failing")
+db.set("music_format", "wma")
+wj, _ = run_disc(force=True)
+check("finished as FLAC", (wj["state"], share_files()[0].endswith(".flac")),
+      ("done", True))
+db.set("music_format", "flac")
+
+print("which tools each format needs")
+check("FLAC", MU.needs("flac"), ["cd-paranoia", "flac"])
+check("AAC needs ffmpeg", MU.needs("aac"), ["cd-paranoia", "ffmpeg"])
+check("WAV needs only the ripper", MU.needs("wav"), ["cd-paranoia"])
+check("ffmpeg is the on-demand one", MU.ON_DEMAND, {"ffmpeg"})
 
 print("nothing knows the disc: CD-Text names it")
 fresh_share()
@@ -568,6 +651,49 @@ check("finished", uj["state"], "done")
 check("Unknown Artist / Unknown Album [freedb id]", share_files()[0],
       "Unknown Artist/Unknown Album [%s]/01 - Track 01.flac" % fid)
 contains("and says nothing knew it", uj["warning"], "Nothing knew this disc")
+print("the unknown-disc setting applies to CDs too")
+db.set("on_unknown_disc", "skip")
+fresh_share()
+sk, why = run_disc(force=True)
+check("Skip: not ripped", (sk or {}).get("state"), "cancelled")
+check("and nothing written", share_files(), [])
+db.set("on_unknown_disc", "ask")
+job_id, _ = rip.enqueue(force=True)
+rip._run_job(db.get_job(job_id))
+asked = db.get_job(job_id)
+check("Ask: waits for a name", asked["state"], "needs_input")
+ok, _ = rip.answer(job_id, name="The Typists - Songs Nobody Knew")
+check("the answer is accepted", ok, True)
+rip._run_job(db.get_job(job_id))
+named = db.get_job(job_id)
+if named["state"] == "transferring":
+    rip._send_one(named)
+    named = db.get_job(job_id)
+check("ripped under the typed name", (named["state"], share_files()[0]),
+      ("done", "The Typists/Songs Nobody Knew/01 - Track 01.flac"))
+check("titled the same way as a looked-up album", named["title"],
+      "The Typists \u2014 Songs Nobody Knew")
+check("no 'nothing knew this disc' warning once it has a name", named["warning"], None)
+again, _ = run_disc(force=True)
+check("the name is remembered when the CD comes back", (again or {}).get("title"),
+      "The Typists \u2014 Songs Nobody Knew")
+db.set("on_unknown_disc", "label")
+check("CD-Text of only punctuation is no name", MU.parse_cdtext(
+    "CD-TEXT for Disc:\n\tTITLE: Real\nCD-TEXT for Track  1:\n\tPERFORMER: ?\n"),
+    {"album": "Real", "artist": "", "tracks": {}})
+
+print("a rip starts from an empty scratch folder, whatever a reused job number left")
+fresh_share()
+# The number the next job will get -- the one a restored backup would hand out again.
+next_id = db.conn().execute("SELECT MAX(id) FROM jobs").fetchone()[0] + 1
+stale = os.path.join(P.STAGING, "job-%d" % next_id, "album")
+os.makedirs(stale, exist_ok=True)
+with open(os.path.join(stale, "01 - Somebody Else.flac"), "wb") as f:
+    f.write(b"fLaC" + b"\0" * 200)
+db.set("transfer_mode", "burst")
+cj2, _ = run_disc(force=True)
+check("the job got the number the stale folder had", cj2["id"], next_id)
+check("only this disc's tracks arrive", [f for f in share_files() if "Somebody" in f], [])
 os.environ["RIPARR_MOCK_CD_IMAGE"] = CUE
 
 # ── data CDs ───────────────────────────────────────────────────────────────────

@@ -8,6 +8,23 @@ bother updating.
 
 ---
 
+## 0.6.1
+
+**Pick your format and quality for music CDs.** Settings → Ripping → Music CDs now offers
+FLAC, ALAC (Apple Music), WAV, MP3, AAC, Opus and Ogg Vorbis, each with its own quality
+choices: MP3 at VBR V0 or V2 or a constant 128 to 320 kbps, AAC from 128 to 320 kbps,
+and so on. AAC and ALAC need an extra download of about 150 MB, which the box fetches
+by itself the first time you rip in one of them.
+
+**"When a disc can't be identified" now covers CDs.** Set it to Ask me and a CD nothing
+recognises asks for "Artist - Album" instead of being saved as Unknown Album. Skip
+leaves it alone. The name you give is remembered if the CD comes back.
+
+**A rip never picks up leftovers from an older one.** After restoring an older backup
+of your settings, a new rip could end up with files from a previous rip mixed into it.
+
+**Garbled names on burned CDs are ignored** instead of becoming an artist called "?".
+
 ## 0.6.0
 
 **Music CDs.** Put a CD in and it comes out as an album in your library: one FLAC per

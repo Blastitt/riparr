@@ -1553,13 +1553,29 @@ def backup_tools_install(user=Depends(require_user)):
 # cd-paranoia, flac, lame, cd-info and bsdtar, all from Debian, through their own door.
 
 @app.get("/api/music/tools")
-def music_tools(user=Depends(require_user)):
-    return MU.status()
+def music_tools(format: str = "", user=Depends(require_user)):
+    """For the format the page is showing, which may not be saved yet."""
+    return MU.status(format or db.get("music_format"))
+
+
+@app.get("/api/music/formats")
+def music_formats(user=Depends(require_user)):
+    """Every format and its quality choices, so the page draws them from the same
+    table the encoder uses."""
+    return {"formats": [{"id": k, "label": v["label"], "ext": v["ext"],
+                         "lossless": v["lossless"], "default": v["default"],
+                         "qualities": [{"id": q, "label": l} for q, l in v["qualities"]]}
+                        for k, v in MU.FORMATS.items()]}
+
+
+class MusicToolsRequest(BaseModel):
+    format: str = ""
 
 
 @app.post("/api/music/tools")
-def music_tools_install(user=Depends(require_user)):
-    r = MU.request_install()
+def music_tools_install(body: MusicToolsRequest = MusicToolsRequest(),
+                        user=Depends(require_user)):
+    r = MU.request_install(body.format or db.get("music_format"))
     if not r.get("ok"):
         raise HTTPException(status_code=400, detail=r["error"])
     return r

@@ -150,10 +150,15 @@ fi
 # Music CDs need cd-paranoia, flac and friends (packaging/cdtools-install.sh). Asked for
 # the same way as the DVD tools and for the same reasons; only apt, so it is quick.
 if [ -f /etc/systemd/system/riparr-cdtools.path ] && [ -d /run/riparr ]; then
-    if ! command -v cd-paranoia >/dev/null 2>&1 || ! command -v flac >/dev/null 2>&1; then
-        touch /run/riparr/cdtools.request
-        say "music CD tools requested (they install in the background)"
-    fi
+    # Every always-installed tool, not just the first two: a release that adds an
+    # encoder has to reach boxes that already have the others.
+    for bin in cd-paranoia cd-info flac lame opusenc oggenc bsdtar; do
+        if ! command -v "$bin" >/dev/null 2>&1; then
+            touch /run/riparr/cdtools.request
+            say "music CD tools requested (they install in the background)"
+            break
+        fi
+    done
 fi
 
 say "System units are up to date"

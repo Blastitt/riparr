@@ -1260,19 +1260,25 @@ function episodeCode(e) {
 function identifyPrompt(j) {
   if ((j.episode_plan || {}).episodes) return seasonPrompt(j);
   const titles = (j.titles || []).filter(t => t.seconds >= 60);
+  const music = j.kind === "music";
   return `
     <div class="job needs">
       <div class="job-head">
         <div class="grow">
-          <div class="job-title">${esc(j.disc_label || "A disc")}</div>
+          <div class="job-title">${esc(j.disc_label || (music ? "A music CD" : "A disc"))}</div>
           <div class="job-phase">${esc(j.question || "Riparr needs a hand with this one.")}</div>
         </div>
         <span class="badge warn">Needs you</span>
       </div>
+      ${music ? `
+      <label class="f wide"><span>What is this album?</span>
+        <input id="ni-name" value="" placeholder="e.g. Pink Floyd - The Wall">
+        <span class="help">The artist, a dash, then the album. The tracks are numbered;
+          Riparr remembers the name if this CD comes back.</span></label>` : `
       <label class="f wide"><span>What is this film?</span>
         <input id="ni-name" value="${esc(j.title || "")}" placeholder="e.g. The Matrix (1999)">
         <span class="help">A year in brackets is used as the year. Without one Riparr
-          won't invent it.</span></label>
+          won't invent it.</span></label>`}
       ${titles.length > 1 ? `
         <div class="ni-titles">
           <div class="ni-label">Which title is the film?</div>
@@ -1968,11 +1974,77 @@ function backupToolsLine(t) {
   return `${why}${t.can_install ? `<button class="btn" data-backup-tools>Install them</button>` : ""}`;
 }
 
+/* Installing the CD tools is a root oneshot (a minute, or a few with ffmpeg), so the
+   button hands over to a poll that repaints the one line, bounded at ten minutes. It
+   asks about the format on screen, which may not be saved yet -- the button is how
+   somebody gets ffmpeg before their first AAC disc rather than during it. */
+function wireMusicTools() {
+  $$("[data-music-tools]").forEach(b => b.onclick = async () => {
+    const fmt = ($("#music-format") || {}).value || "";
+    b.disabled = true;
+    try {
+      await api.post("/api/music/tools", { format: fmt });
+    } catch (e) {
+      toast(e.message, "bad");
+      b.disabled = false;
+      return;
+    }
+    for (let i = 0; i < 200; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      const box = $("#music-tools");
+      if (!box) return;                          // navigated away
+      let t;
+      try { t = await api.get(`/api/music/tools?format=${encodeURIComponent(fmt)}`); }
+      catch (e) { continue; }
+      box.innerHTML = musicToolsLine(t);
+      if (t.ready) { toast("Music CDs are ready", "ok"); return; }
+      if (!t.installing && t.phase === "error") return;
+    }
+  });
+}
+
+/* What each format is, in the order the page offers them: lossless first. */
+const MUSIC_FORMAT_CHOICES = [
+  ["flac", "FLAC — lossless (default)"],
+  ["alac", "ALAC — lossless, for Apple Music (.m4a)"],
+  ["wav", "WAV — uncompressed, no tags"],
+  ["mp3", "MP3 — plays anywhere"],
+  ["aac", "AAC — iTunes and Apple devices (.m4a)"],
+  ["opus", "Opus — smallest for the quality"],
+  ["ogg", "Ogg Vorbis"],
+];
+
+/* A stored quality that belongs to another format means "this format's default" --
+   the server reads it the same way (music.quality_of) -- so it is shown as such. */
+function musicQualityOptions(f, cur) {
+  const ids = (f.qualities || []).map(q => q.id);
+  const pick = ids.includes(String(cur)) ? String(cur) : f.default;
+  return (f.qualities || []).map(q => opt(q.id, q.label, pick)).join("");
+}
+
+function musicQualityHelp(f) {
+  return {
+    flac: "Every setting is the same sound; higher only trades encoding time for "
+          + "slightly smaller files.",
+    mp3: "VBR spends bits where the music needs them. Constant bitrate is for old "
+         + "players that skip or show the wrong length on VBR files.",
+    aac: "256 kbps is what the iTunes Store sells.",
+    opus: "Opus at 160 kbps is generally as good as MP3 at 256.",
+    ogg: "Quality 6 is a good balance; 8 and up are for people who can hear the "
+         + "difference.",
+  }[f.id] || "";
+}
+
 /* The music CD tools come from Debian and install in a minute or so. A CD that arrives
    first simply waits for them, so this line is mostly reassurance. */
 function musicToolsLine(t) {
   if (!t) return "";
   if (t.ready) return `<span class="test-out ok">Music CDs are ready.</span>`;
+  if (t.extra && !t.installing && t.phase !== "error") {
+    return `<span class="test-out warn">AAC and ALAC need ffmpeg, an extra install of
+        about 150 MB. It happens by itself when the first CD needs it, or now:</span>
+      ${t.can_install ? `<button class="btn" data-music-tools>Install it</button>` : ""}`;
+  }
   if (t.installing) return `<span class="test-out">${esc(t.message || "Installing the music CD tools…")}</span>`;
   const why = t.phase === "error"
     ? `<span class="test-out bad">${esc(t.message || "The install didn't finish.")}</span>`
@@ -1987,9 +2059,14 @@ settingsPages.ripping = async (s) => {
   if (s.rip_mode === "backup") {
     try { tools = await api.get("/api/backup/tools"); } catch (e) { tools = null; }
   }
+  let formats = [];
+  try { formats = (await api.get("/api/music/formats")).formats || []; } catch (e) { formats = []; }
+  state.musicFormats = formats;
   if (s.music_enabled !== false) {
     try { cdTools = await api.get("/api/music/tools"); } catch (e) { cdTools = null; }
   }
+  const fmtNow = formats.find(f => f.id === s.music_format) || formats[0]
+    || { id: "flac", qualities: [] };
   return `
   <div class="section"><h2>What to rip</h2><div>
     <label class="f"><span>Titles</span>
@@ -2066,14 +2143,22 @@ settingsPages.ripping = async (s) => {
         "Store-bought or burned. Each album lands in the Music folder (Settings → "
         + "Library), as one file per track with the album's cover.")}
     <label class="f"><span>Format</span>
-      <select data-set="music_format">
-        ${opt("flac", "FLAC — lossless (default)", s.music_format)}
-        ${opt("mp3", "MP3 — smaller, plays anywhere", s.music_format)}
+      <select data-set="music_format" id="music-format">
+        ${MUSIC_FORMAT_CHOICES.map(([id, label]) =>
+          opt(id, label, fmtNow.id)).join("")}
       </select>
-      <span class="help">FLAC is an exact copy of the CD at about half the size, and
-        it's what Plex, Jellyfin and Navidrome prefer. MP3 is high-quality V0, about a
-        sixth the size, for players that don't do FLAC.</span>
+      <span class="help">The three lossless ones are exact copies of the CD. FLAC is
+        about half the size and is what Plex, Jellyfin and Navidrome prefer. ALAC is the
+        same idea for Apple's Music app. WAV is the CD as it is, full size, with no tags
+        — the names are in the folder and file names only. The rest are smaller and
+        lose detail you'd struggle to hear at their default settings.</span>
       <div class="btn-row" id="music-tools">${musicToolsLine(cdTools)}</div></label>
+    <label class="f" id="music-quality-row" ${fmtNow.qualities.length ? "" : "hidden"}>
+      <span>Quality</span>
+      <select data-set="music_quality" id="music-quality">
+        ${musicQualityOptions(fmtNow, s.music_quality)}
+      </select>
+      <span class="help" id="music-quality-help">${esc(musicQualityHelp(fmtNow))}</span></label>
     ${sw("music_metadata", "Look albums up on MusicBrainz", s.music_metadata !== false,
         "Names every track, and tags the files so music servers match them exactly. "
         + "Off names albums from the disc itself, which works for most burned CDs.")}
@@ -3679,26 +3764,24 @@ function wireContent(section, sub) {
     }
   });
 
-  $$("[data-music-tools]").forEach(b => b.onclick = async () => {
-    b.disabled = true;
+  // Changing the format redraws its quality choices and asks whether this format's
+  // tools are here, before anything is saved: the answer is about the choice on screen.
+  const mf = $("#music-format");
+  if (mf) mf.onchange = async () => {
+    const f = (state.musicFormats || []).find(x => x.id === mf.value);
+    const row = $("#music-quality-row");
+    if (f && row) {
+      row.hidden = !(f.qualities || []).length;
+      $("#music-quality").innerHTML = musicQualityOptions(f, f.default);
+      $("#music-quality-help").textContent = musicQualityHelp(f);
+    }
     try {
-      await api.post("/api/music/tools", {});
-    } catch (e) {
-      toast(e.message, "bad");
-      b.disabled = false;
-      return;
-    }
-    for (let i = 0; i < 200; i++) {
-      await new Promise(r => setTimeout(r, 3000));
+      const t = await api.get(`/api/music/tools?format=${encodeURIComponent(mf.value)}`);
       const box = $("#music-tools");
-      if (!box) return;                          // navigated away
-      let t;
-      try { t = await api.get("/api/music/tools"); } catch (e) { continue; }
-      box.innerHTML = musicToolsLine(t);
-      if (t.ready) { toast("Music CDs are ready", "ok"); return; }
-      if (!t.installing && t.phase === "error") return;
-    }
-  });
+      if (box) { box.innerHTML = musicToolsLine(t); wireMusicTools(); }
+    } catch (e) { /* the line just stays as it was */ }
+  };
+  wireMusicTools();
 
   $$("[data-test-notify]").forEach(b => b.onclick = async () => {
     const channel = b.dataset.testNotify;

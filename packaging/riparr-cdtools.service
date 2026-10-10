@@ -1,5 +1,5 @@
 [Unit]
-Description=Install the music CD tools for Riparr (cd-paranoia, flac, lame, cd-info, bsdtar)
+Description=Install the music CD tools for Riparr (cd-paranoia, encoders, cd-info, bsdtar)
 Documentation=https://github.com/jackharvest/riparr
 # apt needs the network up.
 After=network-online.target
@@ -10,7 +10,10 @@ Type=oneshot
 Environment=HOME=/root
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=DEBIAN_FRONTEND=noninteractive
-# Clear the request first, so the path unit re-arms and one request cannot loop.
+# Clear the requests first, so the path unit re-arms and one request cannot loop. The
+# ffmpeg one is kept as .wanted (a name the path unit does not watch) for the script to
+# see. "-" because it usually is not there.
+ExecStartPre=-/bin/mv -f /run/riparr/cdtools-ffmpeg.request /run/riparr/cdtools-ffmpeg.wanted
 ExecStartPre=/bin/rm -f /run/riparr/cdtools.request
 ExecStart=/usr/local/lib/riparr/cdtools-install.sh
 # apt can wait on a MakeMKV build holding the lock; do not let systemd time that out.

@@ -104,7 +104,7 @@ adding a share for box sets cannot quietly redirect your films.
 | **Film template** | `{Title} ({Year})/{Title} ({Year}).mkv` |
 | **TV template** | `{Title} ({Year})/Season {Season:00}/{Title} - S{Season:00}E{Episode:00} - {EpisodeTitle}.mkv` |
 | **Music template** | `{AlbumArtist}/{Album} ({Year})/{DiscTrack} - {Title}` — no extension, Riparr adds `.flac` or `.mp3`. `{DiscTrack}` is `03` on a single disc and `2-03` on disc two of a set. Also `{Artist}`, `{Track:00}`, `{Disc}` |
-| **On unknown disc** | **Use the disc label** *(default)* / Ask me / Skip |
+| **On unknown disc** | **Use the disc label** *(default)* / Ask me / Skip. Applies to music CDs too: a CD nothing knows is ripped as `Unknown Album [id]`, asks you for "Artist - Album", or is left alone |
 
 **This is only about the *name*.** Which title gets ripped is a separate setting, under
 [Ripping](#ripping) — they used to be one, and answering the naming question also
@@ -136,7 +136,8 @@ Bigger effect on file size than anything else here.
 | Setting | Notes |
 |---|---|
 | **Rip music CDs** | On. Store-bought or burned. A burned data CD of MP3s is copied as it is, folders and all |
-| **Format** | **FLAC** *(default)* — an exact copy at about half the size / **MP3** — V0, about a sixth the size |
+| **Format** | Lossless: **FLAC** *(default)*, **ALAC** (Apple Music, `.m4a`), **WAV** (no tags). Smaller: **MP3**, **AAC** (`.m4a`), **Opus**, **Ogg Vorbis**. AAC and ALAC need ffmpeg, an extra ~150 MB the box installs itself the first time it's needed |
+| **Quality** | Per format. MP3: VBR V0 *(default)* or V2, or constant 320/256/192/128. AAC: 256 *(default)*, 320, 192, 128 kbps. Opus: 160 *(default)*, 256, 192, 128, 96 kbps. Ogg: quality 6 *(default)*, 8, 10, 5, 3. FLAC: 5 *(default)*, 8 or 0 — same sound, only file size and speed change. Not shown for ALAC or WAV |
 | **Look albums up on MusicBrainz** | On. Names every track and tags the files with MusicBrainz IDs. Off names albums from the CD-Text on the disc (most burned CDs have it) or `Unknown Album [id]` |
 | **Add the album cover** | On. From the Cover Art Archive, saved as `cover.jpg` and embedded in each file |
 

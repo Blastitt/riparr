@@ -168,9 +168,12 @@ DEFAULTS = {
     # Rip music CDs at all. On by default: a CD in the tray of a box that ignores it
     # looks broken, and a box that rips it is doing what it was asked.
     "music_enabled": True,
-    # "flac" | "mp3". FLAC is lossless and is what every music server prefers; MP3 (V0)
-    # is for the car stereo that predates FLAC.
+    # flac | alac | wav | mp3 | aac | opus | ogg -- music.FORMATS. FLAC is lossless and
+    # is what every music server prefers, so it is the default.
     "music_format": "flac",
+    # Per format; see music.FORMATS. A value that does not belong to the chosen format
+    # means "that format's default", so switching format never needs this changed too.
+    "music_quality": "",
     # Look the disc up on MusicBrainz. Off names albums from the CD-Text on the disc, or
     # "Unknown Album", and tells no outside server what is being ripped.
     "music_metadata": True,

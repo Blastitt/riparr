@@ -1244,11 +1244,21 @@ def _job_dir(job_id, direct=False, kind="movie"):
     folder: MakeMKV names the file itself, and a half-written MKV must never appear in
     somebody's library where a media server will index it. The move into place happens
     at the end and is a rename within one filesystem, so it is instant.
+
+    **Emptied first.** Only a rip that is starting calls this, and nothing a starting
+    rip finds in its own directory belongs to it. Job numbers are not unique forever --
+    restoring an older config backup reuses them -- and a finished rip's copy is kept
+    on the card on purpose (D6), so `job-7` can already hold another disc's files. A
+    music rip then filed the stale tracks beside its own (found on a real 22-track disc:
+    23 files), and a film rip takes the first .mkv in the folder, which could have been
+    the other film.
     """
     if direct:
         d = os.path.join(_library_root(kind), ".riparr-incoming", "job-%d" % job_id)
     else:
         d = os.path.join(STAGING, "job-%d" % job_id)
+    if os.path.isdir(d):
+        shutil.rmtree(d, ignore_errors=True)
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -2730,15 +2740,14 @@ MUSIC_DEST_TRIES = 9
 
 
 def _music_format(s):
-    fmt = (s.get("music_format") or "flac").lower()
-    return fmt if fmt in MU.EXTENSIONS else "flac"
+    return MU.fmt_of(s.get("music_format"))
 
 
-def _music_estimate(toc, fmt):
-    """How big the album will be. FLAC keeps about 60% of a CD's PCM and MP3 V0 about
-    17%; preflight only needs to be in the right neighbourhood."""
+def _music_estimate(toc, fmt, s=None):
+    """How big the album will be, from the format and quality. Preflight only needs to
+    be in the right neighbourhood."""
     pcm = sum(t["sectors"] for t in toc["audio"]) * MU.SECTOR_BYTES
-    return int(pcm * (0.17 if fmt == "mp3" else 0.62))
+    return int(pcm * MU.size_ratio(fmt, (s or {}).get("music_quality")))
 
 
 def _enqueue_cd(d, force=False, expect=None):
@@ -2785,7 +2794,7 @@ def _enqueue_cd(d, force=False, expect=None):
         title=None, disc_label=d.get("label") or "", kind="music", fingerprint=fp,
         output=output, state="queued", phase="Waiting to start", mode=None,
         disc_family="cd", disc_bytes=int(d.get("size_bytes") or 0),
-        bytes_total=_music_estimate(toc, fmt) if toc["audio"]
+        bytes_total=_music_estimate(toc, fmt, s) if toc["audio"]
         else int(d.get("size_bytes") or 0))
     log.info("Queued a %s as job %d (%s).", MU.OPT.cd_kind(toc), job_id, fp)
     _wake.set()
@@ -2844,8 +2853,37 @@ def _identify_music(job, s, d):
     db.update_job(job["id"], phase="Looking the album up")
     remembered = db.get_disc(fp) or {}
     plan = MU.identify(toc, device, s, remembered=remembered, log=log)
-    if job.get("title") and plan.get("unknown"):
-        plan["album"] = job["title"]           # a name somebody typed beats [discid]
+    if plan.get("unknown"):
+        # Nothing knew the disc. A name somebody typed -- just now, or for this disc
+        # before -- beats "Unknown Album [discid]"; failing that, the same setting that
+        # decides what happens to a film nothing recognises decides here too. It was
+        # ignored for CDs at first, which made "Ask me" and "Skip it" quietly mean "rip
+        # it as Unknown" for music only.
+        typed = job.get("title") or remembered.get("title") or ""
+        if typed.startswith("Unknown Album ["):
+            typed = ""
+        if typed:
+            MU.apply_name(plan, typed)
+        else:
+            behaviour = s.get("on_unknown_disc", "label")
+            if behaviour == "skip":
+                db.stage_end(job["id"])
+                db.update_job(job["id"], state="cancelled", finished_at=int(time.time()),
+                              album=plan,
+                              error="Nothing knew this CD, and the setting is to skip.")
+                P.eject()
+                return None
+            if behaviour == "ask":
+                question = ("Riparr couldn't find this CD on MusicBrainz and there are no "
+                            "names on the disc. What's it called?")
+                db.stage_end(job["id"])
+                db.update_job(job["id"], state="needs_input", question=question,
+                              phase="Waiting for you", titles=[], album=plan,
+                              kind="music", output=MU.MUSIC, disc_family="cd",
+                              disc_label=label or None)
+                log.info("Job %d needs a human: %s", job["id"], question)
+                notify.send("needs_you", title="A music CD", body=question)
+                return None
     title = ("%s — %s" % (plan["album_artist"], plan["album"])
              if not plan.get("unknown") else plan["album"])
     year = str(plan.get("year") or "")
@@ -2855,7 +2893,7 @@ def _identify_music(job, s, d):
     db.stage_end(job["id"])
     db.update_job(job["id"], kind="music", output=MU.MUSIC, title=title, album=plan,
                   year=int(year) if year.isdigit() else None, warning=warning,
-                  bytes_total=_music_estimate(toc, fmt), disc_family="cd",
+                  bytes_total=_music_estimate(toc, fmt, s), disc_family="cd",
                   disc_bytes=int(d.get("size_bytes") or 0), disc_label=label or None)
     log.info("Job %d is %s (%s, %d tracks).", job["id"], title, plan["source"],
              len(plan["tracks"]))
@@ -2909,6 +2947,8 @@ def _rip_music(job, s, cancel_ev):
         return album_dir
 
     fmt = _music_format(s)
+    quality = MU.quality_of(fmt, s.get("music_quality"))
+    plan["format"], plan["quality"] = fmt, quality
     template = s.get("music_template") or MU.DEFAULT_TEMPLATE
     wav_dir = os.path.join(STAGING, "job-%d" % job["id"], "wav")
     os.makedirs(wav_dir, exist_ok=True)
@@ -2941,7 +2981,8 @@ def _rip_music(job, s, cancel_ev):
                     raise RipFailed(str(e))
                 log.warning("Job %d: %s; encoding without the cover.", job["id"], e)
                 try:
-                    MU.finish_encode(MU.encode(fmt, wav, out, plan, row, None), out)
+                    MU.finish_encode(MU.encode(fmt, wav, out, plan, row, None, quality),
+                                     out)
                 except MU.MusicFailed as e2:
                     raise RipFailed(str(e2))
                 bare.append(row)
@@ -2994,7 +3035,8 @@ def _rip_music(job, s, cancel_ev):
             row["gentle"] = bool(got.get("gentle"))
             collect()                        # the previous track's encode
             out = os.path.join(album_dir, fname)
-            pending.append((MU.encode(fmt, wav, out, plan, row, cover), out, row, wav))
+            pending.append((MU.encode(fmt, wav, out, plan, row, cover, quality), out,
+                            row, wav))
             done_before[0] += row["sectors"] * MU.SECTOR_BYTES
             db.update_job(job["id"], album=plan)
         db.update_job(job["id"], phase="Finishing the last track")
