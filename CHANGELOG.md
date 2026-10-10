@@ -8,6 +8,28 @@ bother updating.
 
 ---
 
+## 0.6.0
+
+**Music CDs.** Put a CD in and it comes out as an album in your library: one FLAC per
+track, named and tagged from MusicBrainz, with the album cover beside the tracks and
+inside each file. Store-bought and burned CDs both work. A burned CD MusicBrainz doesn't
+know is named from the names written on the disc, if it has them, and otherwise saved as
+"Unknown Album" so nothing gets turned away. A burned data CD full of MP3s is copied
+over as it is.
+
+**Music has its own place.** Settings → Library has a Music row next to Films and
+Television, so albums can go to the share your music server reads. Settings → Ripping
+has the rest: MP3 instead of FLAC, MusicBrainz on or off, cover art on or off.
+
+**A two-CD album lands in one folder,** numbered 1-01, 2-01 and so on.
+
+**A scratched track costs that track, not the album.** The job tells you which track
+couldn't be read, and putting the disc back in tries again instead of being refused as a
+duplicate.
+
+The box installs its CD tools by itself a couple of minutes after this update. A CD put
+in before then waits for them.
+
 ## 0.5.0
 
 **Full disc backups.** Settings → Ripping → Titles → **Full disc backup** keeps the whole

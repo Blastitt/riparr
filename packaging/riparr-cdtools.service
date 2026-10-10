@@ -1,0 +1,19 @@
+[Unit]
+Description=Install the music CD tools for Riparr (cd-paranoia, flac, lame, cd-info, bsdtar)
+Documentation=https://github.com/jackharvest/riparr
+# apt needs the network up.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HOME=/root
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=DEBIAN_FRONTEND=noninteractive
+# Clear the request first, so the path unit re-arms and one request cannot loop.
+ExecStartPre=/bin/rm -f /run/riparr/cdtools.request
+ExecStart=/usr/local/lib/riparr/cdtools-install.sh
+# apt can wait on a MakeMKV build holding the lock; do not let systemd time that out.
+TimeoutStartSec=infinity
+Nice=10
+OOMScoreAdjust=500

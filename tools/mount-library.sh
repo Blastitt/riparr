@@ -68,7 +68,9 @@ if not shares or not default:
 default_id = default["id"]
 
 wanted = []
-for key in ("movie_share_id", "tv_share_id"):
+# Every destination kind in db.KINDS. Music was added after films and television, and a
+# list that names them by hand is a list that silently stops mounting the next one.
+for key in ("movie_share_id", "tv_share_id", "music_share_id"):
     sid = setting(c, key)
     sid = sid if sid in shares else default_id
     if sid not in wanted:

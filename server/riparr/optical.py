@@ -307,3 +307,122 @@ def _iso9660_label(device):
     if len(pvd) < 72 or pvd[0] != 1 or pvd[1:6] != b"CD001":
         return ""
     return pvd[40:72].decode("ascii", "ignore").strip().strip("\x00").strip()
+
+
+# ─────────────────────────── a CD's table of contents ───────────────────────────
+#
+# A music CD has no filesystem, no volume label and nothing MakeMKV will read. What it
+# does have is a table of contents: where every track starts and whether it is audio or
+# data. That is enough to tell a music CD from a data CD, to work out the disc's
+# MusicBrainz identity, and to tell the ripper exactly which sectors are each track.
+#
+# Asked through the kernel's own cdrom ioctls rather than SG_IO: the kernel has already
+# read the TOC to mount nothing, answers from its cache, and needs no tool installed --
+# which matters, because this is how a music CD is recognised *before* the ripping tools
+# are on the box.
+
+CDROMREADTOCHDR = 0x5305
+CDROMREADTOCENTRY = 0x5306
+CDROM_LBA = 0x01
+CDROM_LEADOUT = 0xAA
+
+# The gap between the audio session and the data session of an Enhanced CD (CD-Extra):
+# 6750 sectors of lead-out, 4500 of lead-in, 150 of pre-gap. The last audio track ends
+# this far before the data track starts, and the MusicBrainz disc ID treats the audio
+# session's lead-out as being here. Both from MusicBrainz's own disc ID documentation.
+MULTISESSION_GAP = 11400
+
+
+class _TocHeader(ctypes.Structure):
+    _fields_ = [("first", ctypes.c_ubyte), ("last", ctypes.c_ubyte)]
+
+
+class _TocAddr(ctypes.Union):
+    _fields_ = [("msf", ctypes.c_ubyte * 3), ("lba", ctypes.c_int)]
+
+
+class _TocEntry(ctypes.Structure):
+    """`struct cdrom_tocentry` from linux/cdrom.h. `cdte_adr:4, cdte_ctrl:4` share one
+    byte, and on a little-endian ABI (every board Riparr runs on) adr is the low nibble
+    and ctrl the high one. The union is int-aligned, which ctypes reproduces."""
+    _fields_ = [("track", ctypes.c_ubyte), ("adr_ctrl", ctypes.c_ubyte),
+                ("format", ctypes.c_ubyte), ("addr", _TocAddr),
+                ("datamode", ctypes.c_ubyte)]
+
+
+def read_toc(device):
+    """The disc's table of contents, or None if it cannot be read.
+
+    {"first", "last", "leadout", "tracks": [{"number", "lba", "audio", "preemphasis"}]}
+    with every address a 0-based LBA as the kernel reports it. Lengths and the
+    multisession adjustment are worked out by `toc_layout`, which is pure arithmetic and
+    is tested without a drive.
+    """
+    fd = _open(device)
+    if fd is None:
+        return None
+    try:
+        hdr = _TocHeader()
+        fcntl.ioctl(fd, CDROMREADTOCHDR, hdr)
+        if not hdr.first or hdr.last < hdr.first:
+            return None
+        tracks = []
+        for n in list(range(hdr.first, hdr.last + 1)) + [CDROM_LEADOUT]:
+            e = _TocEntry(track=n, format=CDROM_LBA)
+            fcntl.ioctl(fd, CDROMREADTOCENTRY, e)
+            ctrl = (e.adr_ctrl >> 4) & 0x0F
+            tracks.append({"number": n, "lba": int(e.addr.lba),
+                           "audio": not (ctrl & 0x04), "preemphasis": bool(ctrl & 0x01)})
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    leadout = tracks.pop()
+    return {"first": hdr.first, "last": hdr.last, "leadout": leadout["lba"],
+            "tracks": tracks}
+
+
+def toc_layout(toc):
+    """Add what the raw TOC leaves implicit: each track's length in sectors, the audio
+    tracks on their own, and the lead-out of the audio session.
+
+    The one subtlety is the Enhanced CD, which is a music CD with a data session after
+    it (videos, a web link, a screensaver). Its last audio track does not run up to the
+    data track -- it stops `MULTISESSION_GAP` sectors earlier, and those sectors do not
+    exist to be read. Taking "next track's start" as the end there asks the drive for
+    two and a half minutes of nothing, which is a read error at the end of the album.
+    """
+    tracks = [dict(t) for t in toc["tracks"]]
+    leadout = toc["leadout"]
+    audio_leadout = leadout
+    # A trailing data track after audio is the second session. A *leading* one is the
+    # older "mixed mode" CD (a game or a PC disc with audio after its data track), which
+    # has no session gap and keeps every track in its disc ID.
+    if (len(tracks) > 1 and not tracks[-1]["audio"]
+            and any(t["audio"] for t in tracks[:-1])):
+        audio_leadout = tracks[-1]["lba"] - MULTISESSION_GAP
+        multisession = True
+    else:
+        multisession = False
+    for i, t in enumerate(tracks):
+        nxt = tracks[i + 1]["lba"] if i + 1 < len(tracks) else leadout
+        if multisession and i == len(tracks) - 2:
+            nxt = audio_leadout
+        t["sectors"] = max(0, nxt - t["lba"])
+    out = dict(toc)
+    out["tracks"] = tracks
+    out["audio"] = [t for t in tracks if t["audio"]]
+    out["data"] = [t for t in tracks if not t["audio"]]
+    out["multisession"] = multisession
+    out["audio_leadout"] = audio_leadout
+    return out
+
+
+def cd_kind(toc):
+    """"audio" | "enhanced" | "mixed" | "data" -- what a person would call this CD."""
+    lay = toc_layout(toc)
+    if not lay["audio"]:
+        return "data"
+    if not lay["data"]:
+        return "audio"
+    return "enhanced" if lay["multisession"] else "mixed"

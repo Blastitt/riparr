@@ -71,6 +71,8 @@ machines" are the same control.
 | **Films → Folder** | The folder inside it, e.g. `Movies` or `Films/Bluray`. Several levels deep is fine |
 | **Television → Share** | Can be the same share, or a different one entirely |
 | **Television → Folder** | e.g. `TV` or `Shows` |
+| **Music → Share** | Point it at the share your music server reads. Defaults to the first share |
+| **Music → Folder** | e.g. `Music` |
 
 Under each block Riparr shows the full path it adds up to, and whether that share is
 **mounted** — which is what lets a rip be written straight into your library instead of
@@ -101,6 +103,7 @@ adding a share for box sets cannot quietly redirect your films.
 |---|---|
 | **Film template** | `{Title} ({Year})/{Title} ({Year}).mkv` |
 | **TV template** | `{Title} ({Year})/Season {Season:00}/{Title} - S{Season:00}E{Episode:00} - {EpisodeTitle}.mkv` |
+| **Music template** | `{AlbumArtist}/{Album} ({Year})/{DiscTrack} - {Title}` — no extension, Riparr adds `.flac` or `.mp3`. `{DiscTrack}` is `03` on a single disc and `2-03` on disc two of a set. Also `{Artist}`, `{Track:00}`, `{Disc}` |
 | **On unknown disc** | **Use the disc label** *(default)* / Ask me / Skip |
 
 **This is only about the *name*.** Which title gets ripped is a separate setting, under
@@ -127,6 +130,15 @@ Bigger effect on file size than anything else here.
 | **Rip mode** | Main title *(default)* / All titles / **Full disc backup** — the whole disc as a `VIDEO_TS` or `BDMV` folder, menus and all. DVDs need two extra tools, which install by themselves; until they have, DVDs are ripped as MKV and the job says so |
 | **When Riparr can't tell which title is the film** | **Use the most likely one** *(default)* / Ask me |
 | **On a disc with a 3D version** | **Rip the 2D version** *(default)* / Rip the 3D version |
+
+## Music CDs
+
+| Setting | Notes |
+|---|---|
+| **Rip music CDs** | On. Store-bought or burned. A burned data CD of MP3s is copied as it is, folders and all |
+| **Format** | **FLAC** *(default)* — an exact copy at about half the size / **MP3** — V0, about a sixth the size |
+| **Look albums up on MusicBrainz** | On. Names every track and tags the files with MusicBrainz IDs. Off names albums from the CD-Text on the disc (most burned CDs have it) or `Unknown Album [id]` |
+| **Add the album cover** | On. From the Cover Art Archive, saved as `cover.jpg` and embedded in each file |
 
 ## Television
 

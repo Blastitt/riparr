@@ -590,6 +590,8 @@ const wizard = {
             <input id="s-movie-folder" value="${esc(s.movie_folder)}"></label>
           <label class="f"><span>TV folder</span>
             <input id="s-tv-folder" value="${esc(s.tv_folder)}"></label>
+          <label class="f"><span>Music folder</span>
+            <input id="s-music-folder" value="${esc(s.music_folder)}"></label>
         </div>
         <label class="f"><span>Movie file name</span>
           <input id="s-movie" value="${esc(s.movie_template)}"></label>
@@ -612,6 +614,7 @@ const wizard = {
     $("#w-go").onclick = async () => {
       await api.put("/api/settings", {
         movie_folder: $("#s-movie-folder").value, tv_folder: $("#s-tv-folder").value,
+        music_folder: $("#s-music-folder").value,
         movie_template: $("#s-movie").value, tv_template: $("#s-tv").value,
         on_unknown_disc: $("#s-unknown").value,
       });
@@ -852,6 +855,7 @@ const FAMILY = {
   dvd:    { label: "DVD",     cls: "fam-dvd" },
   bluray: { label: "Blu-ray", cls: "fam-bluray" },
   uhd:    { label: "4K UHD",  cls: "fam-uhd" },
+  cd:     { label: "CD",      cls: "fam-cd" },
 };
 
 function familyTag(family, extra = "") {
@@ -910,6 +914,20 @@ function seasonTag(j) {
     : `${episodeCode(kept[0])}–${episodeCode(kept[kept.length - 1]).split("E").pop()}`;
   return ` <span class="season-tag">${esc(range)}${
     done && done < kept.length ? ` · ${done}/${kept.length} done` : ""}</span>`;
+}
+
+/* The same four words for a music CD: how many tracks, and how many are through. */
+function albumTag(j) {
+  const a = j.album;
+  if (!a) return "";
+  if (a.source === "files") {
+    return a.files ? ` <span class="season-tag">${a.files} file${a.files === 1 ? "" : "s"}</span>` : "";
+  }
+  const rows = a.tracks || [];
+  if (!rows.length) return "";
+  const done = rows.filter(r => r.state === "ripped").length;
+  return ` <span class="season-tag">${rows.length} track${rows.length === 1 ? "" : "s"}${
+    done && done < rows.length && j.state === "ripping" ? ` · ${done}/${rows.length} read` : ""}</span>`;
 }
 
 function jobRow(j) {
@@ -982,7 +1000,7 @@ function jobRow(j) {
       <div class="job-head">
         <div class="grow">
           <div class="job-title">${esc(j.title || j.disc_label || "Unknown disc")}${
-            seasonTag(j)}</div>
+            seasonTag(j)}${albumTag(j)}</div>
           <div class="job-phase">${esc(j.phase || STATE_LABEL[j.state] || j.state)}</div>
         </div>
         ${familyTag(j.disc_family)}
@@ -1365,8 +1383,8 @@ function tray(drives, optical, canRip) {
   const what = d.disc_word || d.media;
   return `<div class="empty-state tray-loaded">
     <div class="big spinning">${icon("compact-disc")}</div>
-    <h2>${esc(d.label || "Disc loaded")}</h2>
-    <p>${what ? `${esc(what)} \u2014 loaded and ready.` : "Loaded and ready."}</p>
+    <h2>${esc(d.label || (d.disc_family === "cd" ? (d.disc_word || "CD") : "Disc loaded"))}</h2>
+    <p>${what && (d.label || d.disc_family !== "cd") ? `${esc(what)} \u2014 loaded and ready.` : "Loaded and ready."}</p>
     ${d.space_warning ? `<p class="why warn-text">${esc(d.space_warning)}</p>` : ""}
     ${canRip ? `<div class="btn-row tray-go">
       <button class="btn primary" id="rip-now">${icon("play")} Rip this disc</button>
@@ -1843,7 +1861,7 @@ settingsPages.library = async (s) => {
           <label class="f"><span>Folder</span>
             <input data-set="${folderKey}" data-dest-folder="${kind}"
                    value="${esc(s[folderKey] || "")}" placeholder="${
-                     kind === "tv" ? "TV" : "Movies"}"></label>
+                     kind === "tv" ? "TV" : kind === "music" ? "Music" : "Movies"}"></label>
         </div>
         <div class="dest-path" data-dest-path="${kind}">${
           sh ? esc(destPath(sh, s[folderKey])) : "no share configured"}</div>
@@ -1869,6 +1887,7 @@ settingsPages.library = async (s) => {
       ${shares.length ? `<div class="dests">
           ${row("movie", "Films", "movie_folder", "movie_share_id")}
           ${row("tv", "Television", "tv_folder", "tv_share_id")}
+          ${row("music", "Music", "music_folder", "music_share_id")}
         </div>`
       : `<div class="empty-state"><div class="big">${icon("hard-drive")}</div>
           <h2>No share configured</h2>
@@ -1904,6 +1923,14 @@ settingsPages.library = async (s) => {
           A file holding two episodes expands <code>E{Episode:00}</code> to
           <code>E01-E02</code> on its own, which is what Plex and Jellyfin read as a
           double.</span></label>
+      <label class="f"><span>Music file name</span>
+        <input data-set="music_template" value="${esc(s.music_template)}">
+        <span class="help">The path inside the music folder, without an extension.
+          <code>{AlbumArtist}</code>, <code>{Artist}</code>, <code>{Album}</code>,
+          <code>{Year}</code>, <code>{Title}</code>, <code>{Track:00}</code> and
+          <code>{Disc}</code>. <code>{DiscTrack}</code> is <code>03</code> on a single
+          disc and <code>2-03</code> on disc two of a set, so every disc of an album
+          lands in one folder.</span></label>
       <label class="f"><span>When a disc can't be identified</span>
         <select data-set="on_unknown_disc">
           ${opt("label", "Use the disc label (default)", s.on_unknown_disc)}
@@ -1941,11 +1968,27 @@ function backupToolsLine(t) {
   return `${why}${t.can_install ? `<button class="btn" data-backup-tools>Install them</button>` : ""}`;
 }
 
+/* The music CD tools come from Debian and install in a minute or so. A CD that arrives
+   first simply waits for them, so this line is mostly reassurance. */
+function musicToolsLine(t) {
+  if (!t) return "";
+  if (t.ready) return `<span class="test-out ok">Music CDs are ready.</span>`;
+  if (t.installing) return `<span class="test-out">${esc(t.message || "Installing the music CD tools…")}</span>`;
+  const why = t.phase === "error"
+    ? `<span class="test-out bad">${esc(t.message || "The install didn't finish.")}</span>`
+    : `<span class="test-out warn">The CD ripping tools aren't installed yet. They install
+         on their own, and a CD put in before then waits for them.</span>`;
+  return `${why}${t.can_install ? `<button class="btn" data-music-tools>Install them</button>` : ""}`;
+}
+
 /* Ripping — what comes off the disc, and how it gets out. */
 settingsPages.ripping = async (s) => {
-  let tools = null;
+  let tools = null, cdTools = null;
   if (s.rip_mode === "backup") {
     try { tools = await api.get("/api/backup/tools"); } catch (e) { tools = null; }
+  }
+  if (s.music_enabled !== false) {
+    try { cdTools = await api.get("/api/music/tools"); } catch (e) { cdTools = null; }
   }
   return `
   <div class="section"><h2>What to rip</h2><div>
@@ -2016,6 +2059,26 @@ settingsPages.ripping = async (s) => {
       </select>
       <span class="help">Both are read as season zero by Plex and Jellyfin. Set the
         season to 0 on the episode plan to file a disc here.</span></label>
+  </div></div>
+
+  <div class="section"><h2>Music CDs</h2><div>
+    ${sw("music_enabled", "Rip music CDs", s.music_enabled !== false,
+        "Store-bought or burned. Each album lands in the Music folder (Settings → "
+        + "Library), as one file per track with the album's cover.")}
+    <label class="f"><span>Format</span>
+      <select data-set="music_format">
+        ${opt("flac", "FLAC — lossless (default)", s.music_format)}
+        ${opt("mp3", "MP3 — smaller, plays anywhere", s.music_format)}
+      </select>
+      <span class="help">FLAC is an exact copy of the CD at about half the size, and
+        it's what Plex, Jellyfin and Navidrome prefer. MP3 is high-quality V0, about a
+        sixth the size, for players that don't do FLAC.</span>
+      <div class="btn-row" id="music-tools">${musicToolsLine(cdTools)}</div></label>
+    ${sw("music_metadata", "Look albums up on MusicBrainz", s.music_metadata !== false,
+        "Names every track, and tags the files so music servers match them exactly. "
+        + "Off names albums from the disc itself, which works for most burned CDs.")}
+    ${sw("music_cover_art", "Add the album cover", s.music_cover_art !== false,
+        "From the Cover Art Archive. Saved beside the tracks and inside each file.")}
   </div></div>
 
   <div class="section"><h2>Tracks
@@ -3612,6 +3675,27 @@ function wireContent(section, sub) {
       try { t = await api.get("/api/backup/tools"); } catch (e) { continue; }
       box.innerHTML = backupToolsLine(t);
       if (t.ready) { toast("DVD backups are ready", "ok"); return; }
+      if (!t.installing && t.phase === "error") return;
+    }
+  });
+
+  $$("[data-music-tools]").forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try {
+      await api.post("/api/music/tools", {});
+    } catch (e) {
+      toast(e.message, "bad");
+      b.disabled = false;
+      return;
+    }
+    for (let i = 0; i < 200; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      const box = $("#music-tools");
+      if (!box) return;                          // navigated away
+      let t;
+      try { t = await api.get("/api/music/tools"); } catch (e) { continue; }
+      box.innerHTML = musicToolsLine(t);
+      if (t.ready) { toast("Music CDs are ready", "ok"); return; }
       if (!t.installing && t.phase === "error") return;
     }
   });

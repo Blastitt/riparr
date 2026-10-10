@@ -64,6 +64,23 @@ guessing. If a stage runs long it says *"3 min over the usual"* — never "0 min
 **History** shows the same five stages for every finished rip, to scale, so you can see
 where your half hour actually went.
 
+## Music CDs
+
+Same thing: put it in, walk away. Riparr sees it's a music CD from the disc's track list,
+looks it up on MusicBrainz, rips every track and files the album in your Music folder.
+A Blu-ray drive reads CDs too, so there's nothing to buy.
+
+- **Burned CDs work.** MusicBrainz won't know a mix you made, but the burning software
+  usually wrote the names onto the disc and Riparr reads them. Failing that you get
+  `Unknown Artist/Unknown Album [8a0b3c0d]/01 - Track 01.flac`, which you can rename later.
+- **A burned data CD full of MP3s** is copied as it is, into `Music/<disc name>/`.
+- **A scratched track costs that track, not the album.** Riparr re-reads anything that
+  doesn't verify. If a track still won't read it's left out, the job says which, and the
+  disc isn't marked as done, so putting it back in tries again.
+- **A box set** of several CDs ends up in one album folder, numbered `1-01`, `2-01` and so on.
+- **The first CD after this update may wait a minute or two** while the box installs its
+  CD tools. It holds the disc and carries on by itself.
+
 ## What the eject actually means
 
 **The disc ejects when the file has landed in your library and been checked.** Eject means

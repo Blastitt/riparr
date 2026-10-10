@@ -4,7 +4,7 @@
 
 # Riparr
 
-**Rip your Blu-rays and DVDs straight onto your NAS. One box, one cable, no babysitting.**
+**Rip your Blu-rays, DVDs and music CDs straight onto your NAS. One box, one cable, no babysitting.**
 
 [Get it](#get-it) · [User guide](docs/guide/README.md) · [Which drive to buy](docs/guide/01-what-you-need.md#which-drive) · [Troubleshooting](docs/guide/08-troubleshooting.md)
 
@@ -21,7 +21,8 @@ it's set up you don't touch the software again:
 
 > **put a disc in → close the tray → walk away → it ejects when it's done**
 
-The MKV lands on your share, named the way Plex and Jellyfin want it. The disc comes back
+The MKV lands on your share, named the way Plex and Jellyfin want it. Music CDs come out
+as tagged FLAC with the album cover, in their own Music folder. The disc comes back
 out when it's done, which is all the status you need most days — `riparr.local` in a
 browser is there for when you want detail.
 

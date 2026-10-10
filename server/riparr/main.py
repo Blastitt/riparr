@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from itsdangerous import URLSafeTimedSerializer, BadSignature
 
 from . import (__version__, artwork as ART, backup as BK, db, drives as DRV, led as LED,
+               music as MU,
                makemkv as MK,
                notify as NT, platform as P, rip as RIP, shares as SH, system as SY,
                tv as TV, updater)
@@ -97,6 +98,7 @@ def _startup():
     SY.start_scheduler()
     RIP.start()
     BK.start()
+    MU.start()
     LED.start()
 
 
@@ -567,11 +569,22 @@ def _drive_report():
         family = RIP.disc_family(d)
         d["disc_family"] = family
         d["disc_word"] = RIP.DISC_WORD.get(family)
+        if family == "cd":
+            # "CD-ROM" is what the drive calls a music CD too. Say which kind it is, and
+            # how much is on it -- a person holding a CD knows its track count.
+            word = CD_WORD.get(d.get("cd_kind")) or "CD"
+            n = d.get("cd_tracks") or 0
+            d["disc_word"] = ("%s, %d track%s" % (word, n, "" if n == 1 else "s")
+                              if n else word)
         d["cannot_read"] = (RIP.unreadable_reason(d, d["libredrive"])
                             if d.get("present") else None)
         d["space_warning"] = _space_warning(d) if d.get("present") else None
         out.append(d)
     return out
+
+
+CD_WORD = {"audio": "Music CD", "enhanced": "Music CD with extras",
+           "mixed": "Mixed-mode CD", "data": "Data CD"}
 
 
 def _space_warning(drive):
@@ -1168,6 +1181,8 @@ def _job_out(j):
             j["titles"] = []
     if j.get("episode_plan"):
         j["episode_plan"] = db.episode_plan(j)
+    if j.get("album"):
+        j["album"] = db.album_plan(j)
     # Which stage is running and since when. The queue's counting timer is built from
     # this against the medians: the two slowest stages of a rip -- the disc scan and
     # the decrypt pass -- can report no progress at all, so "this box usually takes
@@ -1529,6 +1544,22 @@ def backup_tools(user=Depends(require_user)):
 @app.post("/api/backup/tools")
 def backup_tools_install(user=Depends(require_user)):
     r = BK.request_install()
+    if not r.get("ok"):
+        raise HTTPException(status_code=400, detail=r["error"])
+    return r
+
+
+# ── music CDs ──
+# cd-paranoia, flac, lame, cd-info and bsdtar, all from Debian, through their own door.
+
+@app.get("/api/music/tools")
+def music_tools(user=Depends(require_user)):
+    return MU.status()
+
+
+@app.post("/api/music/tools")
+def music_tools_install(user=Depends(require_user)):
+    r = MU.request_install()
     if not r.get("ok"):
         raise HTTPException(status_code=400, detail=r["error"])
     return r

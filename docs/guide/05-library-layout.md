@@ -24,6 +24,21 @@ TV/
       Twin Peaks - S01E01 - Pilot.mkv
 ```
 
+**Music**
+```
+Music/
+  Pink Floyd/
+    The Wall (1979)/
+      cover.jpg
+      1-01 - In the Flesh.flac      ← disc 1 of 2
+      2-01 - Hey You.flac           ← disc 2 lands in the same folder
+```
+
+A one-disc album is just `01 - Title.flac`. The year is the album's original year, not
+the year of the reissue you own. Every file is tagged with the artist, album, track and
+disc numbers, the cover, and its MusicBrainz IDs, so Plex, Jellyfin, Navidrome, Lidarr
+and beets match it without guessing.
+
 These follow the conventions Plex, Jellyfin, and Emby all expect. Files land already
 matched — no "fix match" pass in Plex afterward.
 

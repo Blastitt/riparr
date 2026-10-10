@@ -116,6 +116,12 @@ ADDED_COLUMNS = {
         # used to live only in memory on the worker's copy of the job, so every staged
         # film named "Spirited Away (2001)" was filed as plain "Spirited Away".
         ("year", "INTEGER"),
+        # ── music ──
+        # A music CD's whole plan, the way `episode_plan` is a season's: the album, every
+        # track with its tags and how far it has got, and the files the transfer wrote
+        # (`sent`), which is what verification and the purge check against -- the album
+        # folder on the share may also hold the other discs of the set.
+        ("album", "TEXT"),
     ],
     "discs": [
         ("title_index", "INTEGER"),    # the remembered title choice (R5: fix once, ever)
@@ -133,6 +139,9 @@ ADDED_COLUMNS = {
         ("season", "INTEGER"),
         ("first_episode", "INTEGER"),
         ("series_name", "TEXT"),
+        # The MusicBrainz release this CD was filed as. Several releases share one disc
+        # ID; once one is chosen, the same disc must choose it again.
+        ("release_id", "TEXT"),
     ],
 }
 
@@ -151,6 +160,26 @@ DEFAULTS = {
     # nothing has to be chosen before the box works. See db.destination().
     "movie_share_id": None,
     "tv_share_id": None,
+    # ── music ──
+    # Music gets its own share and folder like films and television, because the NAS a
+    # music server reads is often not the one Plex reads. None falls back to the default.
+    "music_share_id": None,
+    "music_folder": "Music",
+    # Rip music CDs at all. On by default: a CD in the tray of a box that ignores it
+    # looks broken, and a box that rips it is doing what it was asked.
+    "music_enabled": True,
+    # "flac" | "mp3". FLAC is lossless and is what every music server prefers; MP3 (V0)
+    # is for the car stereo that predates FLAC.
+    "music_format": "flac",
+    # Look the disc up on MusicBrainz. Off names albums from the CD-Text on the disc, or
+    # "Unknown Album", and tells no outside server what is being ripped.
+    "music_metadata": True,
+    "music_cover_art": True,
+    "music_cdtext": True,
+    # The whole path below the music folder, without an extension. {DiscTrack} is "03"
+    # on a single disc and "2-03" on disc two of a set, so every disc of an album shares
+    # one folder.
+    "music_template": "{AlbumArtist}/{Album} ({Year})/{DiscTrack} - {Title}",
     # Two different questions, and they used to be one setting.
     #
     # `on_unknown_disc` is *what to call it* -- it fires when the volume label gives
@@ -543,6 +572,7 @@ def share_by_id(share_id):
 KINDS = {
     "movie": ("movie_share_id", "movie_folder", "Movies"),
     "tv":    ("tv_share_id",    "tv_folder",    "TV"),
+    "music": ("music_share_id", "music_folder", "Music"),
 }
 
 
@@ -693,7 +723,7 @@ INTERRUPTIBLE = ["identifying", "ripping", "transferring", "verifying"]
 # Columns held as JSON text. Encoding them in one place rather than at each call site
 # is what stopped `episode_plan` from being written as a Python repr the first time a
 # caller forgot -- which SQLite accepts happily and json.loads does not.
-_JSON_COLUMNS = ("titles", "episode_plan")
+_JSON_COLUMNS = ("titles", "episode_plan", "album")
 
 
 def _encode_json(fields):
@@ -719,6 +749,31 @@ def episode_plan(job):
         return got if isinstance(got, dict) else {}
     except (ValueError, TypeError):
         return {}
+
+
+def album_plan(job):
+    """A music job's album plan as a dict -- `episode_plan`'s twin."""
+    raw = (job or {}).get("album")
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        got = json.loads(raw)
+        return got if isinstance(got, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def job_with_remote_name(name, fingerprint):
+    """A finished job from this disc that wrote to this album folder -- which makes
+    writing there again a re-rip, not an overwrite of somebody else's."""
+    if not name or not fingerprint:
+        return None
+    row = conn().execute(
+        "SELECT * FROM jobs WHERE remote_name=? AND fingerprint=? AND state='done' "
+        "ORDER BY id DESC LIMIT 1", (name, fingerprint)).fetchone()
+    return dict(row) if row else None
 
 
 def next_episode(series_id, season, series_name=None):

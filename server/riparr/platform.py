@@ -193,18 +193,42 @@ def optical_drives():
             # answer cannot go stale; `present` going False is the invalidation.
             cached = _disc_cache.get(dev)
             if cached is None:
-                profile, _ = OPT.get_configuration(dev)
-                cached = {
-                    "media": OPT.PROFILES.get(profile) if profile else None,
-                    "media_kind": OPT.profile_kind(profile) if profile else None,
-                    "label": OPT.volume_label(dev) or None,
-                    "size_bytes": OPT.disc_size_bytes(dev),
-                }
+                cached = _identify_disc(dev)
                 _disc_cache[dev] = cached
             d.update(cached)
         else:
             _disc_cache.pop(dev, None)
         out.append(d)
+    return out
+
+
+def _identify_disc(dev):
+    """What is in the tray, read once per insertion.
+
+    A CD gets its table of contents read too, because "music CD or data CD" is a
+    different pipeline and the TOC answers it in milliseconds. A music CD has no
+    filesystem, so the label lookup is skipped for one: blkid and the ISO 9660 read
+    would each ask the drive for data sectors that are not there, and some drives spend
+    seconds retrying every such read.
+
+    A drive that reports no current profile still gets asked for a TOC. A disc with
+    audio tracks in its TOC is a CD whatever the profile said.
+    """
+    profile, _ = OPT.get_configuration(dev)
+    kind = OPT.profile_kind(profile) if profile else None
+    out = {"media": OPT.PROFILES.get(profile) if profile else None, "media_kind": kind,
+           "size_bytes": OPT.disc_size_bytes(dev), "cd_kind": None, "cd_tracks": 0}
+    if kind in ("cd", None):
+        toc = OPT.read_toc(dev)
+        if toc and toc.get("tracks"):
+            lay = OPT.toc_layout(toc)
+            if kind == "cd" or lay["audio"]:
+                out["media_kind"] = "cd"
+                out["media"] = out["media"] or "CD-ROM"
+                out["cd_kind"] = OPT.cd_kind(toc)
+                out["cd_tracks"] = len(lay["audio"])
+    out["label"] = (None if out["cd_kind"] == "audio"
+                    else OPT.volume_label(dev) or None)
     return out
 
 
@@ -230,6 +254,10 @@ _MOCK_DISCS = {
                "size_bytes": 24 * 2 ** 30},
     "dvd": {"media": "DVD-ROM", "media_kind": "dvd", "label": "THE_MATRIX",
             "size_bytes": 7 * 2 ** 30},
+    # A music CD: no label, about 700 MB. Which CD it is comes from RIPARR_MOCK_CD
+    # (audio | enhanced | unknown | data) -- see music.py.
+    "cd": {"media": "CD-ROM", "media_kind": "cd", "label": None,
+           "size_bytes": 700 * 2 ** 20},
 }
 
 
@@ -260,6 +288,15 @@ def _mock_drives():
         label = os.environ.get("RIPARR_MOCK_LABEL")
         if label:
             d["label"] = label
+        if disc == "cd":
+            from . import music as MU            # music imports platform
+            toc = MU.read_toc(d["device"])
+            d["cd_kind"] = OPT.cd_kind(toc) if toc else None
+            d["cd_tracks"] = len(toc["audio"]) if toc else 0
+            if d["cd_kind"] == "audio":
+                d["label"] = None
+            elif d["cd_kind"] == "data" and not label:
+                d["label"] = "MP3_MIX"
     return [d]
 
 
@@ -1140,6 +1177,8 @@ SYSTEM_COMPONENTS = [
     ("riparr-makemkv.service",  "unit",   "Installing MakeMKV",                 True),
     ("riparr-dvdtools.path",    "unit",   "Installing the DVD backup tools",    True),
     ("riparr-dvdtools.service", "unit",   "Installing the DVD backup tools",    True),
+    ("riparr-cdtools.path",     "unit",   "Installing the music CD tools",      True),
+    ("riparr-cdtools.service",  "unit",   "Installing the music CD tools",      True),
     ("riparr-reboot.path",      "unit",   "Restart from the web page",          True),
     ("riparr-reboot.service",   "unit",   "Restart from the web page",          True),
     ("riparr-poweroff.path",    "unit",   "Shut down from the web page",        True),
@@ -1152,6 +1191,7 @@ SYSTEM_COMPONENTS = [
     ("makemkv-install.sh",      "script", "Installing MakeMKV",                 True),
     ("makemkv-manifest.json",   "script", "Which MakeMKV to install, and its checksums", True),
     ("dvdtools-install.sh",     "script", "Installing the DVD backup tools",    True),
+    ("cdtools-install.sh",      "script", "Installing the music CD tools",      True),
     ("netwatch.sh",             "script", "Recovers Wi-Fi that dies silently",  True),
     ("netwatch-settings.py",    "script", "Your Wi-Fi recovery settings",       True),
     ("mount-library.sh",        "script", "Mounts your library share",          True),

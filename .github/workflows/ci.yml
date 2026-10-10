@@ -184,6 +184,19 @@ jobs:
         run: |
           python server/backup-pipeline.test.py
 
+      # Music CDs, through the real tools: cd-paranoia reading a synthesized disc image,
+      # cd-info reading its CD-Text, flac and lame encoding, bsdtar copying a data CD.
+      # Nothing here had a CD drive when it was written, so the tools themselves are the
+      # closest thing to hardware there is -- and the runner's versions (lame 3.100,
+      # libcdio 2.1) are older than the development machine's, which is the point: the
+      # output being parsed is checked against two releases of each tool.
+      - name: Music CDs go through the whole pipeline
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends cd-paranoia libcdio-utils \
+            flac lame libarchive-tools xorriso ffmpeg >/dev/null
+          python server/music-pipeline.test.py
+
       # The card write's data-in, data-out pieces: sector arithmetic, device names,
       # partition classification -- and since Raspberry Pi OS Trixie dropped custom.toml,
       # the cloud-init seed files a Pi card boots from. Wrong seed files boot a stock image

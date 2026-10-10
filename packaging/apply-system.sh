@@ -33,7 +33,8 @@ install -d -m 0755 "$LIB"
 # ── helper scripts ──
 # Every root-side helper the one-way doors call. Listed rather than globbed so a stray
 # file in packaging/ cannot become a privileged script by being dropped there.
-for s in wifi-apply.sh usbhost-fix.sh makemkv-run.sh netwatch.sh dvdtools-install.sh; do
+for s in wifi-apply.sh usbhost-fix.sh makemkv-run.sh netwatch.sh dvdtools-install.sh \
+         cdtools-install.sh; do
     [ -f "$PKG/$s" ] || continue
     install -o root -g root -m 0755 "$PKG/$s" "$LIB/$s"
 done
@@ -81,6 +82,7 @@ fi
 for u in riparr.service \
          riparr-makemkv.service riparr-makemkv.path \
          riparr-dvdtools.service riparr-dvdtools.path \
+         riparr-cdtools.service riparr-cdtools.path \
          riparr-poweroff.service riparr-poweroff.path \
          riparr-reboot.service riparr-reboot.path \
          riparr-usbhost.service riparr-usbhost.path \
@@ -101,7 +103,7 @@ systemctl daemon-reload
 # the path appears. The watchdog is a plain service and does want starting, but only if
 # it is not already running -- restarting it during an outage would reset the
 # escalation counter and start the clock again from zero.
-for p in riparr-makemkv riparr-dvdtools riparr-poweroff riparr-reboot riparr-usbhost riparr-wifi \
+for p in riparr-makemkv riparr-dvdtools riparr-cdtools riparr-poweroff riparr-reboot riparr-usbhost riparr-wifi \
          riparr-provision riparr-remount riparr-restart; do
     [ -f "/etc/systemd/system/$p.path" ] || continue
     systemctl enable --quiet "$p.path" 2>/dev/null || true
@@ -142,6 +144,15 @@ if [ -f /etc/systemd/system/riparr-dvdtools.path ] && [ -d /run/riparr ]; then
        || ! ldconfig -p 2>/dev/null | grep -q 'libdvdcss\.so\.2'; then
         touch /run/riparr/dvdtools.request
         say "DVD backup tools requested (they install in the background)"
+    fi
+fi
+
+# Music CDs need cd-paranoia, flac and friends (packaging/cdtools-install.sh). Asked for
+# the same way as the DVD tools and for the same reasons; only apt, so it is quick.
+if [ -f /etc/systemd/system/riparr-cdtools.path ] && [ -d /run/riparr ]; then
+    if ! command -v cd-paranoia >/dev/null 2>&1 || ! command -v flac >/dev/null 2>&1; then
+        touch /run/riparr/cdtools.request
+        say "music CD tools requested (they install in the background)"
     fi
 fi
 
