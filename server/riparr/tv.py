@@ -453,6 +453,27 @@ def analyse(titles, min_seconds=120):
                 play_all = t
     episodes = sorted(cluster + doubles, key=lambda t: t["index"])
 
+    # The play-all also says which titles are the season. An episode-length title with
+    # a segment map and none of it in the play-all is something else the disc carries --
+    # a bonus episode, a pilot, a 21-minute documentary -- so it is offered as an extra
+    # rather than numbered. Found on Samurai Jack season 2: a bare 02630.m2ts counted as
+    # a fourteenth episode, which also cost the disc its segment order, and the fallback
+    # (playlist numbering) filed episode 12 as E01. Only when the play-all holds most of
+    # the cluster, and runs as long as the titles it holds: one that is longer than its
+    # map accounts for has a map we can't read fully, and then nothing is left out.
+    outside = []
+    pa_segs = set(parse_segments((play_all or {}).get("segments")))
+    if pa_segs:
+        outs = [e for e in episodes if parse_segments(e.get("segments"))
+                and not set(parse_segments(e.get("segments"))) & pa_segs]
+        held = sum(e["seconds"] for e in episodes if e not in outs)
+        if (outs and len(episodes) - len(outs) >= max(MIN_EPISODES, len(outs) + 1)
+                and PLAY_ALL_SUM_LOW <= play_all["seconds"] / float(held or 1)
+                <= PLAY_ALL_SUM_HIGH):
+            outside = outs
+            episodes = [e for e in episodes if e not in outs]
+            doubles = [d for d in doubles if d not in outs]
+
     ordered = _order_by_segments(episodes, play_all)
     order_source = "segments"
     if ordered is None:
@@ -485,6 +506,7 @@ def analyse(titles, min_seconds=120):
                       + [t for t in compilations if t is not play_all],
         "dedup_signal": _dedup_signal(remaining),
         "doubles": [t["index"] for t in doubles],
+        "outside_play_all": [t["index"] for t in outside],
         "order_source": order_source,
         "confidence": ORDER_TRUST[order_source],
         "episode_seconds": int(episode_seconds),
@@ -745,6 +767,13 @@ def plan_warnings(plan, found, episode_list=None):
     if found.get("play_all"):
         out.append("The “play all” title was excluded. It's every episode in "
                    "one file, and it's what gave us the episode order.")
+    for idx in found.get("outside_play_all") or []:
+        secs = next((x.get("seconds", 0) for x in found.get("extras") or []
+                     if x["index"] == idx), 0)
+        out.append("Title %d is episode-length (%d min) but isn't part of the “play "
+                   "all”, so it's listed under extras rather than numbered — usually a "
+                   "bonus episode or a featurette. Tick it there to keep it."
+                   % (idx, round(secs / 60.0)))
     if found.get("doubles"):
         out.append("%d title%s twice the usual length, numbered as a two-episode file "
                    "(S01E01-E02), which is how a premiere or finale is normally shipped."

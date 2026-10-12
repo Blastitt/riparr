@@ -200,6 +200,20 @@ check("falls through to playlist numbering", f4["order_source"], "source")
 check("and gets the right answer anyway",
       [e["index"] for e in f4["episodes"]], [0, 1, 2])
 
+print("an episode-length title outside a complete play-all is an extra")
+# Samurai Jack season 2's shape: the play-all runs exactly as long as the episodes it
+# holds, so the map is whole and the title it leaves out is a bonus, not episode 4.
+OUTSIDE = [t(0, 22, segments="5", source="00801.mpls"),
+           t(1, 22, segments="6", source="00802.mpls"),
+           t(2, 22, segments="7", source="00800.mpls"),
+           t(3, 21, segments="99", source="02630.m2ts"),
+           t(9, 66, 9.0, segments="5,6,7", source="00820.mpls", chapters=12)]
+f4b = tv.analyse(OUTSIDE, FLOOR)
+check("three episodes, ordered by the play-all",
+      ([e["index"] for e in f4b["episodes"]], f4b["order_source"]), ([0, 1, 2], "segments"))
+check("and the outsider is offered as an extra",
+      (f4b["outside_play_all"], [e["index"] for e in f4b["extras"]]), ([3], [3]))
+
 print("no signal at all admits it")
 BARE = [t(0, 42), t(1, 42), t(2, 42)]
 f5 = tv.analyse(BARE, FLOOR)

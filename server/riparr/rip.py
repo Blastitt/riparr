@@ -1986,8 +1986,11 @@ def _rip_season(job, s, cancel_ev):
             continue
         out_dir = os.path.join(base, _row_dir(row))
         os.makedirs(out_dir, exist_ok=True)
-        where = ("%d of %d — %s" % (n, len(rows), episode_label(row)) if row.get("extra")
-                 else "Episode %d of %d — %s" % (n, len(rows), episode_label(row)))
+        # Counted within their own kind: "Episode 1 of 15" on a 13-episode disc reads
+        # as two episodes that aren't on it.
+        same = [r for r in rows if bool(r.get("extra")) == bool(row.get("extra"))]
+        where = "%s %d of %d — %s" % ("Extra" if row.get("extra") else "Episode",
+                                      same.index(row) + 1, len(same), episode_label(row))
 
         def progress(done, eta, phase, _where=where):
             overall = done_before[0] + done

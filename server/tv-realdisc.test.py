@@ -91,6 +91,36 @@ check("named in order",
 check("nothing to warn about but the play-all",
       len(tv.plan_warnings(plan, found, eps)), 1)
 
+
+# ── Samurai Jack, The Complete Second Season (Blu-ray, 2026-10-12) ───────────
+
+print("")
+print("Samurai Jack season 2: the same shape, plus a 21-minute title outside the play-all")
+titles, eps = load("samurai-jack-s2-bluray.info.txt", "tvmaze-1603-samurai-jack.json")
+found = tv.analyse(titles, MAKEMKV_MIN)
+check("thirteen episodes, not fourteen", len(found["episodes"]), 13)
+check("the bare 02630.m2ts is offered as an extra, not numbered",
+      (found["outside_play_all"], sorted(t["index"] for t in found["extras"])),
+      ([21], [4, 19, 21]))
+check("so the play-all still orders the disc",
+      (found["play_all"]["index"], found["order_source"]), (15, "segments"))
+# The same trap as season 1, one disc on: 00101.mpls is episode 12. With title 21
+# counted the segment order failed and playlist numbering filed it as E01.
+check("00101.mpls is episode 12",
+      [t["index"] for t in found["episodes"]],
+      [0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
+check("the label says season 2", tv.season_from_label("Samurai Jack Season 2"), (2, None))
+plan = tv.build_plan(found, season=2, first_episode=1,
+                     series={"id": 1603, "name": "Samurai Jack", "year": "2001"},
+                     episode_list=eps)
+check("named in order",
+      [(e["episode"], e["episode_title"]) for e in plan["episodes"]][:2] + [
+          (plan["episodes"][11]["episode"], plan["episodes"][11]["episode_title"])],
+      [(1, "Jack Learns to Jump Good"), (2, "Jack Tales"), (12, "Jack and the Spartans")])
+warnings = tv.plan_warnings(plan, found, eps)
+check("the user is told about the left-out title",
+      any("Title 21 is episode-length (21 min)" in w for w in warnings), True)
+
 print("")
 if failures:
     print("%d FAILED: %s" % (len(failures), ", ".join(failures)))
