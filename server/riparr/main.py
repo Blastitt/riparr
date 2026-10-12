@@ -579,6 +579,7 @@ def _drive_report():
         d["cannot_read"] = (RIP.unreadable_reason(d, d["libredrive"])
                             if d.get("present") else None)
         d["space_warning"] = _space_warning(d) if d.get("present") else None
+        d["space_note"] = _space_note(d) if d.get("present") else None
         out.append(d)
     return out
 
@@ -598,17 +599,71 @@ def _space_warning(drive):
     Hedged on purpose: this compares the whole **disc**, and what actually gets written
     is the main title, which is smaller by an unknown amount. So it is a caution and
     never a refusal — the certainty stays where the real number is.
+
+    And it measures the place the rip will actually go. This used to compare the disc
+    with the card even when rips were going straight to the library, so a box with a
+    mounted NAS and terabytes free greeted every Blu-ray with "43 GB disc, 25 GB free
+    on the card" -- a warning about a card that was never going to be used.
     """
     if SH.Transport.supports_follow_copy:
         return None                      # streaming, so size stopped mattering
     size = drive.get("size_bytes") or 0
+    if not size:
+        return None
+    lib = _library_room(drive)
+    if lib is not None:
+        return None if size <= lib else (
+            "This is a %d GB disc and your library has %d GB free. What gets ripped is "
+            "usually smaller than the whole disc, so it may still fit — Riparr will say "
+            "for certain once it has read it." % (size // 2 ** 30, lib // 2 ** 30))
     free = P.storage_status().get("free_bytes") or 0
-    if not size or size + WINDOW_BYTES <= free:
+    if size + WINDOW_BYTES <= free:
         return None
     return ("This is a %d GB disc and there's %d GB free on the card. The film itself "
             "is smaller than the whole disc, so it may still fit — Riparr will say "
             "for certain once it has read it."
             % (size // 2 ** 30, free // 2 ** 30))
+
+
+def _space_note(drive):
+    """The calm version: how much room this disc will take, where it is going.
+
+    Shown instead of a warning when the rip goes straight to the library and fits.
+    "Up to", because the whole disc is the ceiling and the rip is usually well under it.
+    """
+    size = drive.get("size_bytes") or 0
+    lib = _library_room(drive)
+    if not size or lib is None or size > lib:
+        return None
+    return ("Up to %s, straight to your library (%s free there)."
+            % (_human_bytes(size), _human_bytes(lib)))
+
+
+def _human_bytes(n):
+    return ("%.1f TB" % (n / 2.0 ** 40)) if n >= 2 ** 40 else ("%d GB" % (n // 2 ** 30))
+
+
+def _library_room(drive):
+    """Free bytes where this disc will be written, if that is the library. Else None.
+
+    The tray does not know yet whether a video disc is a film or a season -- that takes
+    the scan -- and the two can go to different shares, so both have to be direct for
+    the card to drop out of the question, and the tighter of the two is the one quoted.
+    """
+    kinds = (["music"] if RIP.disc_family(drive) == "cd" else ["movie", "tv"])
+    room = []
+    for kind in kinds:
+        if not RIP.use_direct(kind=kind):
+            return None
+        try:
+            share, _ = db.destination(kind)
+            free = P.library_status(share).get("free_bytes")
+        except Exception:
+            free = None
+        if not free:
+            return None
+        room.append(free)
+    return min(room) if room else None
 
 
 def _autorip_state():

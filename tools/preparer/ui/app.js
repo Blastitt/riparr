@@ -897,7 +897,22 @@ function renderDone(installed) {
     // known_hosts, and a stale one may still say `User riparr` from the Pi-era image.
     // The card only ever has root, and the key is right there next to it.
     const ssh = `ssh -i ${esc(state.boot.assets)}/riparr_key root@${esc(host)}.local`;
-    $("#done-note").innerHTML = `<span class="ssh-line">${ssh}</span>`;
+    // SSH remembers each box it has met. A new card is a new box under the old name,
+    // so anyone who connected to a previous card gets a warning about eavesdroppers
+    // instead of a prompt. Expected, harmless, and terrifying: say so, and offer to
+    // forget the old one rather than send them to edit known_hosts by hand.
+    $("#done-note").innerHTML = `<span class="ssh-line">${ssh}</span>
+      <span class="forget-box">Prepared a card for this box before? Your Mac may warn
+      that the box's identity has changed. That's expected with a new card.
+      <button class="ghost tiny" id="forget-box">Forget the old card</button>
+      <span id="forget-out"></span></span>`;
+    $("#forget-box").onclick = async () => {
+      let r;
+      try { r = await riparr.forget_old_box(host); } catch (e) { r = null; }
+      $("#forget-out").textContent = !r ? "That didn't work. Try again."
+        : r.forgot ? "Done. Connect again and it will ask once, then remember this card."
+        : "Nothing to forget. Your Mac hadn't met an earlier card.";
+    };
     $("#done-actions").innerHTML =
       `<button class="primary" id="resume-setup">Set it up for me</button>`
       + `<button class="ghost" id="again">Prepare another card</button>`;

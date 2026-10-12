@@ -124,6 +124,39 @@ DECOYS = [{"index": i, "seconds": 6000 - i, "bytes": 24 * GB - i * 1000,
            "segments": "1", "chapters": 20} for i in range(8)]
 check("decoys share a segment and collapse to one", tv.analyse(DECOYS, FLOOR), None)
 
+print("a film with featurettes is not a season with the film as its play-all")
+# Shipped in 0.6.1: two or three featurettes of similar length made a "cluster", and the
+# film -- the longest title -- was taken for the play-all and excluded. The film is not
+# the featurettes strung together, by segments or by length, so it is a film.
+check("film plus two 25-minute featurettes",
+      tv.analyse([t(0, 120, 8, "00800.mpls", "1"), t(1, 25, 1, "00801.mpls", "2"),
+                  t(2, 26, 1, "00802.mpls", "3")], FLOOR), None)
+check("film plus three featurettes, DVD, no segment map",
+      tv.analyse([t(0, 110), t(1, 16), t(2, 18), t(3, 20)], FLOOR), None)
+check("film plus four featurettes",
+      tv.analyse([t(0, 120), t(1, 20), t(2, 19.7), t(3, 20.3), t(4, 20.2)], FLOOR), None)
+DVD_PLAYALL = [t(0, 22), t(1, 21.7), t(2, 22.2), t(3, 21.8), t(4, 85.8)]
+f_dvd = tv.analyse(DVD_PLAYALL, FLOOR)
+check("a DVD play-all with no segment map is recognised by adding up",
+      (len(f_dvd["episodes"]), f_dvd["play_all"]["index"]), (4, 4))
+BONUS_DOC = [t(i, 42 + i * 0.2, source="0080%d.mpls" % i, segments=str(i)) for i in range(6)] + [
+    t(9, 100, 6, "00900.mpls", "50")]
+f_doc = tv.analyse(BONUS_DOC, FLOOR)
+check("a feature-length bonus on a real season disc is an extra, not a play-all",
+      (len(f_doc["episodes"]), f_doc["play_all"], [e["index"] for e in f_doc["extras"]]),
+      (6, None, [9]))
+
+print("the last disc's two episodes and their play-all are two episodes")
+# The play-all of a two-episode disc is exactly twice an episode, which is the length of
+# a double-length premiere. Read as one, both episodes went to disk twice.
+TWO = [t(0, 44, source="00800.mpls", segments="1"), t(1, 43.3, source="00801.mpls", segments="2"),
+       t(2, 85, 7.8, source="00802.mpls", segments="1,2", chapters=12)]
+f_two = tv.analyse(TWO, FLOOR)
+check("two episodes", [e["index"] for e in f_two["episodes"]], [0, 1])
+check("and the 2x title is the play-all", f_two["play_all"]["index"], 2)
+TWO_DVD = [t(0, 44), t(1, 43.3), t(2, 85)]
+check("on a DVD too, by adding up", len(tv.analyse(TWO_DVD, FLOOR)["episodes"]), 2)
+
 # ── ordering ─────────────────────────────────────────────────────────────────
 
 print("segment map beats playlist numbering when they disagree")

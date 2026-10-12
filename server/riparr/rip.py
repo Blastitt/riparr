@@ -267,7 +267,7 @@ def enqueue(force=False, expect=None):
     # interface already renders ("Reading the disc"), so this costs no new UI.
     job_id = db.create_job(
         title=None, disc_label=label, kind="movie", fingerprint="",
-        state="identifying", phase="Reading the disc \u2014 a few minutes on an encrypted DVD",
+        state="identifying", phase=_reading_phase(disc_family(d)),
         mode=None, bytes_total=int(d.get("size_bytes") or 0))
 
     # The identify stage opens *here*, not in `_identify`. The scan is minutes long and
@@ -852,11 +852,20 @@ def read_titles(device, disc=None, on_progress=None):
             pass
         proc.wait()
 
-    class _P:
-        stdout = "".join(out_lines)
-    p = _P()
+    out = parse_info("".join(out_lines))
+    if key and out:
+        _titles_cache.update(key=key, titles=out, at=time.time())
+    return out
+
+
+def parse_info(text):
+    """`makemkvcon -r info` output into Riparr's title list.
+
+    Its own function so a real disc's scan, saved as a fixture, goes through exactly the
+    code the box runs -- see server/fixtures/discs and tv-realdisc.test.py.
+    """
     titles = {}
-    for line in (p.stdout or "").splitlines():
+    for line in (text or "").splitlines():
         m = TINFO.match(line)
         if not m:
             continue
@@ -878,10 +887,7 @@ def read_titles(device, disc=None, on_progress=None):
             t["segments"] = value
         elif code == 8:
             t["chapters"] = int(value or 0)
-    out = [titles[k] for k in sorted(titles)]
-    if key and out:
-        _titles_cache.update(key=key, titles=out, at=time.time())
-    return out
+    return [titles[k] for k in sorted(titles)]
 
 
 def _disc_arg(device):
@@ -1415,7 +1421,7 @@ def _identify_season(job, s, d, titles, remembered):
         return False, None
 
     label = d.get("label") or job.get("disc_label") or ""
-    season, _disc_no = tv.season_from_label(label)
+    season, disc_no = tv.season_from_label(label)
     if remembered.get("season") is not None:
         season = remembered["season"]
 
@@ -1444,10 +1450,24 @@ def _identify_season(job, s, d, titles, remembered):
 
     first = remembered.get("first_episode")
     continued = False
+    guessed = False
     if first is None:
-        first = db.next_episode((series or {}).get("id"), season,
-                                series_name=(series or {}).get("name") or series_name)
-        continued = first is not None
+        # How many numbers this disc uses, so a disc whose *successor* is already in
+        # the library can count back from it. A double-length title uses two.
+        count = sum(2 if t["index"] in (found.get("doubles") or []) else 1
+                    for t in found["episodes"])
+        first, sure = db.season_start(
+            (series or {}).get("id"), season,
+            series_name=(series or {}).get("name") or series_name,
+            disc=disc_no, count=count)
+        # "Continued" means a disc of this season is already in the library, which is
+        # what settles the broadcast-order question below -- not merely that the start
+        # is certain. Disc 1 is certain to start at E01 and is exactly the disc that
+        # must still ask it.
+        continued = sure and db.next_episode(
+            (series or {}).get("id"), season,
+            series_name=(series or {}).get("name") or series_name) is not None
+        guessed = first is not None and not sure
     if first is None:
         first = 1
     # Whether anything about this season has been settled before. The first disc is the
@@ -1462,7 +1482,15 @@ def _identify_season(job, s, d, titles, remembered):
     # continue the numbering. Leaving it empty here is what put a raw volume label in
     # the library and made every disc of a box set start again at episode one.
     plan["series"] = plan.get("series") or series_name
+    # Recorded so the next disc of the set can number itself from its neighbours rather
+    # than from "the highest so far" -- see db.season_start.
+    plan["disc"] = disc_no
     plan["warnings"] = tv.plan_warnings(plan, found, episode_list or None)
+    if guessed:
+        plan["warnings"].insert(0, (
+            "This is disc %d, and the disc before it hasn't been ripped yet, so Riparr "
+            "can't know where its episodes start. E%02d is a guess from the other discs "
+            "— check it, or rip the earlier disc first." % (disc_no, first)))
     if first_of_season and any(e["episode_title"] for e in plan["episodes"]):
         # The one thing no amount of reading the disc can settle. TVmaze and TVDB both
         # publish *aired* order, and a handful of shows were released on disc in
@@ -1501,7 +1529,10 @@ def _identify_season(job, s, d, titles, remembered):
     # where one control fixes every disc after it. Which is what the guide has been
     # promising about season discs since before any of this was built.
     behaviour = s.get("on_season_disc", "unsure")
+    # A guessed starting number always asks, like a missing season does: under "auto"
+    # it would file a third of a season under the wrong numbers, with confidence.
     ask = (season is None
+           or guessed
            or behaviour == "ask"
            or (behaviour == "unsure"
                and (found["confidence"] != "high" or first_of_season)))
@@ -1559,9 +1590,24 @@ def _commit_season(job, s, d, titles, plan):
 
 # ── stage 1: work out what this disc is ──
 
+def _reading_phase(family):
+    """What to say while the disc is scanned, for the disc actually in the drive.
+
+    This said "a few minutes on an encrypted DVD" for every disc, so a Blu-ray scan --
+    66 seconds on the reference box -- announced itself as a DVD. The DVD figure is the
+    slow one because CSS is cracked in software on four A53 cores; a Blu-ray's keys come
+    from the key database and the scan is mostly reading playlists.
+    """
+    if family == "dvd":
+        return "Reading the disc \u2014 a few minutes on an encrypted DVD"
+    if family in ("bluray", "uhd"):
+        return "Reading the disc \u2014 about a minute"
+    return "Reading the disc"
+
+
 def _identify(job, s):
     db.update_job(job["id"], state="identifying",
-                  phase="Reading the disc \u2014 a few minutes on an encrypted DVD",
+                  phase=_reading_phase(job.get("disc_family")),
                   started_at=job.get("started_at") or int(time.time()))
     db.stage_enter(job["id"], "identify")
     drives = P.optical_drives()

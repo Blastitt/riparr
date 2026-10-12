@@ -1391,7 +1391,8 @@ function tray(drives, optical, canRip) {
     <div class="big spinning">${icon("compact-disc")}</div>
     <h2>${esc(d.label || (d.disc_family === "cd" ? (d.disc_word || "CD") : "Disc loaded"))}</h2>
     <p>${what && (d.label || d.disc_family !== "cd") ? `${esc(what)} \u2014 loaded and ready.` : "Loaded and ready."}</p>
-    ${d.space_warning ? `<p class="why warn-text">${esc(d.space_warning)}</p>` : ""}
+    ${d.space_warning ? `<p class="why warn-text">${esc(d.space_warning)}</p>`
+      : d.space_note ? `<p class="why muted">${esc(d.space_note)}</p>` : ""}
     ${canRip ? `<div class="btn-row tray-go">
       <button class="btn primary" id="rip-now">${icon("play")} Rip this disc</button>
     </div>` : ""}

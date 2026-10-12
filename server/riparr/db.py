@@ -820,6 +820,80 @@ def next_episode(series_id, season, series_name=None):
     return highest + 1 if highest else None
 
 
+def season_start(series_id, season, series_name=None, disc=None, count=0):
+    """Where this disc's numbering starts, and whether that is known or guessed.
+
+    Returns (first_episode, sure). first_episode is None when nothing about this season
+    has been ripped and the disc gives no number to reason from.
+
+    `next_episode` answers "after the highest episode so far", which is right only when
+    discs go in in order -- and people put in disc 3 before disc 2 all the time: the
+    box set is open on the sofa, disc 2 is in the other player. Disc 2 was then numbered
+    after disc 3, silently, and the season ended up with its middle third filed as the
+    end. The label usually says which disc it is (`THE_WIRE_S01_D03`), so use it:
+
+    * disc 1 starts at 1;
+    * disc N whose predecessor is ripped starts right after it;
+    * disc N whose *successor* is ripped ends right before it (needs `count`);
+    * this same disc number ripped before (another pressing, a re-rip) starts where
+      that one did;
+    * anything else is a gap -- disc 4 with only disc 1 done -- and the answer is an
+      estimate from the average disc, reported as not sure so the plan stops and asks.
+
+    No disc number, or no ripped disc of this season that recorded one: fall back to
+    `next_episode`, which is right for every set ripped in order.
+    """
+    plain = next_episode(series_id, season, series_name=series_name)
+    if season is None or (not series_id and not series_name):
+        return plain, plain is not None
+    if not disc:
+        return plain, plain is not None
+    if series_id:
+        where, args = "series_id=?", [series_id]
+    else:
+        where, args = "series_id IS NULL AND title=?", [series_name]
+    rows = conn().execute(
+        "SELECT episode_plan FROM jobs WHERE kind='tv' AND season=? AND %s "
+        "AND state='done' AND episode_plan IS NOT NULL" % where,
+        [season] + args).fetchall()
+    discs = {}                                   # disc number -> (first, last)
+    for row in rows:
+        try:
+            plan = json.loads(row["episode_plan"]) or {}
+        except (ValueError, TypeError):
+            continue
+        n = plan.get("disc")
+        nums = [(int(e.get("episode") or 0), int(e.get("episode_last") or e.get("episode") or 0))
+                for e in plan.get("episodes") or [] if e.get("state") != "skipped"]
+        if not n or not nums:
+            continue
+        lo, hi = min(a for a, _ in nums), max(b for _, b in nums)
+        old = discs.get(int(n))
+        discs[int(n)] = (min(lo, old[0]), max(hi, old[1])) if old else (lo, hi)
+    disc = int(disc)
+    if disc in discs:
+        return discs[disc][0], True
+    if disc == 1:
+        return 1, True
+    if disc - 1 in discs:
+        return discs[disc - 1][1] + 1, True
+    if disc + 1 in discs and count and discs[disc + 1][0] - count >= 1:
+        return discs[disc + 1][0] - count, True
+    if not discs:
+        # Nothing recorded a disc number. If nothing at all is ripped, a disc that says
+        # it is number 3 is not the start of the season, whatever the counter thinks.
+        if plain is None and count:
+            return (disc - 1) * count + 1, False
+        return plain, plain is not None
+    # A gap. Estimate from the discs we have seen: the average episodes per disc.
+    per = sum(b - a + 1 for a, b in discs.values()) / float(len(discs))
+    below = [n for n in discs if n < disc]
+    if below:
+        n = max(below)
+        return int(round(discs[n][1] + 1 + per * (disc - n - 1))), False
+    return max(1, int(round((disc - 1) * per)) + 1), False
+
+
 def get_job(job_id):
     row = conn().execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
     return dict(row) if row else None

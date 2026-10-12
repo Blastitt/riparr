@@ -452,6 +452,10 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 /* A fix is a sentence there, not a command, so it wraps rather than scrolling sideways. */
 #review-warn .ssh-line { white-space: normal; }
 
+/* Said quietly under the ssh line: most people never see the warning it explains. */
+.forget-box { display: block; margin-top: 10px; color: var(--text-3); font-size: 11.5px; }
+#forget-out { display: block; margin-top: 4px; }
+
 .hidden { display: none !important; }
 
 /* ── the second half: setting the box up ─────────────────── */

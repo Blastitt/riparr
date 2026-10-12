@@ -547,6 +547,11 @@ class Bridge:
                 + "\n\nNothing has been written and your card is untouched.",
             }
 
+        # This card is about to be a new box under an old name. The app's own memory of
+        # the old one is now wrong by construction, so forget it here, where we know why.
+        core.forget_host_keys(os.path.join(self.assets, "known_hosts"),
+                              core.host_key_names(cfg.get("hostname")))
+
         toml_path = os.path.join(RUNDIR, "custom.toml")
         # UTF-8 and LF: Linux reads these, and an SSID can be any Unicode at all.
         with open(toml_path, "w", encoding="utf-8", newline="\n") as f:
@@ -713,6 +718,21 @@ class Bridge:
         r["makemkv_installs"] = core.makemkv_bundle(
             os.path.join(self.assets, "makemkv"))["version"]
         return r
+
+    def forget_old_box(self, hostname):
+        """The friendly answer to SSH's man-in-the-middle warning after a re-flash.
+
+        Card writes already clear the app's own known_hosts. This is for the copy SSH
+        keeps for the user -- ~/.ssh/known_hosts, written the first time they pasted the
+        ssh line -- which this app does not touch unless asked, because it is theirs.
+        Only the box's own names are removed.
+        """
+        names = core.host_key_names(hostname)
+        n = 0
+        for f in (os.path.join(self.assets, "known_hosts"),
+                  os.path.join(os.path.expanduser("~"), ".ssh", "known_hosts")):
+            n += core.forget_host_keys(f, names)
+        return {"ok": True, "forgot": n}
 
     def name_taken(self, hostname):
         """Is something already answering to this name on the network?

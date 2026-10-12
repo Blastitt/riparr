@@ -159,6 +159,50 @@ check("the second disc does not ask", d2 is not None and d2["state"], "done")
 check("and carries on from seven", db.episode_plan(d2)["episodes"][0]["episode"], 7)
 db.set("on_season_disc", "auto")
 
+# ── discs put in out of order ───────────────────────────────────────────────
+
+def finish(job_id):
+    j = db.get_job(job_id)
+    j["_device"], j["_plan"] = "/dev/sr0", db.episode_plan(j)
+    b = rip._rip_season(j, rip._settings(), threading.Event())
+    tr, fo, b = rip._transfer_season(j, rip._settings(), b, threading.Event())
+    rip._finish_season(j, rip._settings(), tr, fo, b)
+    return db.get_job(job_id)
+
+
+print("disc 3 before disc 2 does not push disc 2 to the end")
+# The box set is open on the sofa and disc 2 is in the other player. Numbering used to
+# be "after the highest episode so far", so disc 2 became E13-E18 behind disc 3.
+fresh_share()
+db.set("on_season_disc", "auto")
+o1 = run(new_job("OUT_OF_ORDER_S01_D01"))
+check("disc one is 1-6", [db.episode_plan(o1)["episodes"][i]["episode"] for i in (0, -1)],
+      [1, 6])
+o3 = new_job("OUT_OF_ORDER_S01_D03")
+check("disc three, with disc two missing, stops even under auto",
+      rip._identify(o3, rip._settings()), None)
+p3 = db.episode_plan(db.get_job(o3["id"]))
+check("proposing 13 from the size of disc one", p3["episodes"][0]["episode"], 13)
+contains("and saying it is a guess", p3["warnings"][0], "can't know where")
+rip.answer(o3["id"], season=1, first_episode=13)
+o3 = finish(o3["id"])
+check("disc three landed", o3["state"], "done")
+o2 = run(new_job("OUT_OF_ORDER_S01_D02"))
+check("disc two does not ask -- disc one says where it starts",
+      o2 is not None and o2["state"], "done")
+check("and it is 7-12, not 19-24",
+      [db.episode_plan(o2)["episodes"][i]["episode"] for i in (0, -1)], [7, 12])
+
+print("disc 2 after disc 3 alone counts back from disc 3")
+fresh_share()
+b3 = new_job("COUNT_BACK_S02_D03")
+rip._identify(b3, rip._settings())
+rip.answer(b3["id"], season=2, first_episode=13)
+finish(b3["id"])
+b2 = run(new_job("COUNT_BACK_S02_D02"))
+check("ends right before disc three", db.episode_plan(b2)["episodes"][-1]["episode"], 12)
+check("so starts at 7", db.episode_plan(b2)["episodes"][0]["episode"], 7)
+
 # ── the film path is unchanged ───────────────────────────────────────────────
 
 print("a film disc still rips as a film")

@@ -75,6 +75,11 @@ MIN_EPISODES = 2
 # A title this many times the episode length is the play-all, not an episode.
 PLAY_ALL_RATIO = 2.5
 
+# Without a segment map, a play-all is recognised by adding up: it runs about as long
+# as the episodes it strings together. Play-alls drop the per-episode recap and credits,
+# so they come in somewhat short; a film is nowhere near the sum of its featurettes.
+PLAY_ALL_SUM_LOW, PLAY_ALL_SUM_HIGH = 0.80, 1.10
+
 # Past this, one title is not one film. See `looks_like_blob`.
 BLOB_MIN_SECONDS = 12600
 
@@ -253,6 +258,50 @@ def _find_play_all(titles, episode_seconds):
     return best
 
 
+def _held(title, others):
+    """The other titles whose segments all lie inside this one's segment map."""
+    segs = set(parse_segments(title.get("segments")))
+    if not segs:
+        return []
+    out = []
+    for o in others:
+        if o["index"] == title["index"]:
+            continue
+        osegs = set(parse_segments(o.get("segments")))
+        if osegs and osegs <= segs and osegs != segs:
+            out.append(o)
+    return out
+
+
+def _really_plays_all(play_all, episodes, by_length=True):
+    """Is this long title actually the episodes end to end, or just something long?
+
+    `_find_play_all` picks the longest title well past episode length, which on a
+    season disc is the play-all -- and on a *film* disc with two or three featurettes is
+    the film. Taken at its word, a film plus a 25-minute making-of and a 26-minute
+    documentary read as a two-episode season with the film excluded as its play-all
+    (shipped in 0.6.1, found 2026-10-12 testing against a real season disc). So the
+    claim has to be checked against the thing it claims to contain:
+
+    * its segment map holds at least two of the episodes' segments (Blu-ray), or
+    * it runs about as long as the episodes added together (a DVD has no segment map).
+    """
+    if not play_all or not episodes:
+        return False
+    segs = set(parse_segments(play_all.get("segments")))
+    if segs:
+        held = sum(1 for e in episodes
+                   if set(parse_segments(e.get("segments"))) and
+                   set(parse_segments(e.get("segments"))) <= segs)
+        if held >= 2:
+            return True
+    if not by_length:
+        return False
+    total = sum(e["seconds"] for e in episodes)
+    return bool(total) and (PLAY_ALL_SUM_LOW * total <= play_all["seconds"]
+                            <= PLAY_ALL_SUM_HIGH * total)
+
+
 def _order_by_segments(episodes, play_all):
     """Order the episodes the way the play-all plays them, or None if it can't say.
 
@@ -328,9 +377,27 @@ def analyse(titles, min_seconds=120):
     if len(rough) < MIN_EPISODES:
         return None
     play_all = _find_play_all(candidates, _median([t["seconds"] for t in rough]))
+    if play_all and not _really_plays_all(play_all, _dedup(rough)):
+        # Something long that is not the episodes strung together. Longer than every
+        # "episode" put together, it is the reason the disc exists -- a film, and the
+        # cluster is its featurettes. Shorter, it is a bonus feature sitting on a real
+        # season disc (a documentary beside six episodes) and simply is not the play-all.
+        if play_all["seconds"] > sum(t["seconds"] for t in _dedup(rough)):
+            return None
+        play_all = None
 
-    remaining = [t for t in candidates
-                 if not play_all or t["index"] != play_all["index"]]
+    # A title whose segment map wholly holds two or more other titles is a compilation
+    # of them, at any length: the play-all of a two-episode disc (2x, under the ratio
+    # above), or a "premiere movie" sold beside its own parts. It must go before the
+    # merge, for the same reason the play-all does -- it overlaps everything it holds
+    # and, as the longest, would absorb them. Found when a two-episode play-all at
+    # exactly 2x came back from analyse() as no season at all.
+    compilations = [t for t in candidates
+                    if t is not play_all and len(_held(t, candidates)) >= 2]
+    if not play_all and compilations:
+        play_all = max(compilations, key=lambda t: t["seconds"])
+    gone = {t["index"] for t in compilations} | {(play_all or {}).get("index")}
+    remaining = [t for t in candidates if t["index"] not in gone]
     unique = _dedup(remaining)
     cluster = _largest_cluster(unique)
     if len(cluster) < MIN_EPISODES:
@@ -344,6 +411,18 @@ def analyse(titles, min_seconds=120):
                if t["index"] != (play_all or {}).get("index")
                and t not in cluster
                and DOUBLE_LOW <= t["seconds"] / float(episode_seconds) <= DOUBLE_HIGH]
+    # The last disc of a season often carries two episodes and a play-all, and that
+    # play-all is exactly twice an episode -- the same length as a double-length
+    # premiere. It sits below PLAY_ALL_RATIO, so it arrives here. If it holds the other
+    # episodes' segments, or (with no segment map) runs as long as both of them, it is
+    # the play-all, and ripping it as E03-E04 would put both episodes on disk twice.
+    for t in list(doubles):
+        # By length only when there are exactly two: against three or more episodes a
+        # 2x title cannot be their sum, and a real double has nothing to add up to.
+        if _really_plays_all(t, cluster, by_length=len(cluster) == 2):
+            doubles.remove(t)
+            if not play_all:
+                play_all = t
     episodes = sorted(cluster + doubles, key=lambda t: t["index"])
 
     ordered = _order_by_segments(episodes, play_all)
@@ -368,7 +447,8 @@ def analyse(titles, min_seconds=120):
         "episodes": ordered,
         "play_all": play_all,
         "extras": extras,
-        "duplicates": [t for t in remaining if t not in unique],
+        "duplicates": [t for t in remaining if t not in unique]
+                      + [t for t in compilations if t is not play_all],
         "dedup_signal": _dedup_signal(remaining),
         "doubles": [t["index"] for t in doubles],
         "order_source": order_source,

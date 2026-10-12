@@ -80,11 +80,22 @@ def normalize(label):
 
 
 def _score(a, b):
-    """How alike two titles are, ignoring a leading article and punctuation."""
+    """How alike two titles are, ignoring a leading article and punctuation.
+
+    **Numbers must agree exactly**, or it is no match at all. A character ratio treats
+    "season 1" and "season 5" as one keystroke apart -- 0.952 for "Samurai Jack season
+    1" against "season 5", over the bar -- and so put the fifth season's cover behind
+    the first season's disc (seen on the reference box, 2026-10-12). The digit is the
+    part of the title that says *which* one, so it is the one part that cannot be fuzzy:
+    "Toy Story 2" is not "Toy Story 3" however similar the letters.
+    """
     def key(x):
         x = re.sub(r"^(the|a|an)\s+", "", x.strip().lower())
         return re.sub(r"[^a-z0-9]+", " ", x).strip()
-    return difflib.SequenceMatcher(None, key(a), key(b)).ratio()
+    ka, kb = key(a), key(b)
+    if sorted(re.findall(r"\d+", ka)) != sorted(re.findall(r"\d+", kb)):
+        return 0.0
+    return difflib.SequenceMatcher(None, ka, kb).ratio()
 
 
 def _get(url, timeout=12):

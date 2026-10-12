@@ -1155,6 +1155,18 @@ tr.hist.cancelled > td.stat { color: var(--fg-muted); }
 .ep-warnings li + li { margin-top: 5px; }
 .ep-controls { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 12px; }
 .ep-controls .f { max-width: 260px; }
+/* A season question is a form, and a form wants the room more than the poster does: at
+   the 720px every other job is held to, the episode table wrapped and the settings-page
+   label column left "Series" and "First episode" floating beside their fields. Labels
+   stack above their inputs here, the way .f.wide does for the film question. */
+.disc-cell .job.needs { max-width: min(100%, 1040px); }
+.ep-controls .f { display: block; }
+.ep-controls .f > span:first-child {
+  display: block; text-align: start; margin: 0 0 5px; padding-top: 0; min-height: 0;
+  font-size: 13px;
+}
+.ep-controls .f .help { margin-left: 0; display: block; margin-top: 5px; }
+.ep-controls .f input:not([type=number]), .ep-controls .f select { width: 100%; }
 .ep-controls select { margin-bottom: 6px; }
 .ep-trust { display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
             font-size: 12px; flex-wrap: wrap; }

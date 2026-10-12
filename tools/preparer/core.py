@@ -1255,6 +1255,40 @@ def ensure_key(assets):
     return open(pub).read().strip()
 
 
+def host_key_names(hostname):
+    """Every name a box could have been reached by and remembered under."""
+    h = (hostname or "riparr").strip().lower()
+    return [h, "%s.local" % h]
+
+
+def forget_host_keys(known_hosts, names):
+    """Drop remembered host keys for `names` from one known_hosts file.
+
+    A new card is a new box as far as SSH is concerned: fresh host keys, same name. Any
+    file that remembers the old key then answers the next connection with REMOTE HOST
+    IDENTIFICATION HAS CHANGED and a paragraph about eavesdroppers -- the most alarming
+    thing SSH can say, about the one change the user just made on purpose. Found on
+    2026-10-12 by re-flashing the reference box and pasting the done screen's ssh line.
+
+    Only the named entries go; everything else in the file is someone else's. A copy is
+    kept as `<file>.old` by ssh-keygen itself. Returns how many names had an entry.
+    """
+    if not os.path.exists(known_hosts):
+        return 0
+    keygen = shutil.which("ssh-keygen")
+    if not keygen:
+        return 0
+    forgot = 0
+    for n in names:
+        r = subprocess.run(
+            [keygen, "-R", n, "-f", known_hosts], capture_output=True, text=True,
+            **({"creationflags": 0x08000000} if sys.platform == "win32" else {}))
+        # ssh-keygen says "# Host <n> found" for each entry it removed.
+        if r.returncode == 0 and "found" in (r.stdout or ""):
+            forgot += 1
+    return forgot
+
+
 # ────────────────────────────── Updates ──────────────────────────────
 
 def probe_appliance(host, port=DEFAULT_PORT, timeout=4):

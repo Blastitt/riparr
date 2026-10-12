@@ -97,6 +97,55 @@ PYEOF
 
 [ -n "$ROWS" ] || { log "no share configured; skipping"; exit 0; }
 
+# Where a share's server actually is. mount.cifs asks DNS and nothing else, but the name
+# people type is often a Windows network name -- `mothership`, `TOWER`, `DS920` -- that
+# only answers a NetBIOS broadcast. smbclient asks both, so the share's Test button
+# passed while this mount failed on every boot, silently, and the interface blamed a
+# sleeping NAS. Found on the reference box 2026-10-12. So: DNS (which includes mDNS for
+# .local), then NetBIOS, and mount by the address with the typed name kept in the UNC.
+resolve() {
+  local h="$1" a=""
+  if [[ "$h" =~ ^[0-9.]+$ || "$h" == *:* ]]; then echo "$h"; return; fi
+  a=$(getent ahostsv4 "$h" 2>/dev/null | awk 'NR==1{print $1}')
+  if [ -z "$a" ]; then
+    # A NetBIOS name query, asked directly. nmblookup would do it, but it lives in
+    # samba-common-bin, which smbclient does not pull in and which brings Samba's whole
+    # Python stack with it -- for one 50-byte broadcast.
+    a=$("$PY" - "$h" 2>/dev/null <<'NBEOF'
+import os, socket, struct, sys
+
+def nbns(name, timeout=2.0):
+    n = name.upper()[:15].ljust(15) + "\x00"
+    enc = "".join(chr(0x41 + (ord(c) >> 4)) + chr(0x41 + (ord(c) & 15)) for c in n)
+    tid = int.from_bytes(os.urandom(2), "big")
+    q = (struct.pack(">HHHHHH", tid, 0x0110, 1, 0, 0, 0)
+         + b"\x20" + enc.encode("latin-1") + b"\x00" + struct.pack(">HH", 0x20, 1))
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    s.settimeout(timeout)
+    try:
+        s.sendto(q, ("255.255.255.255", 137))
+        while True:
+            data, _ = s.recvfrom(1024)
+            if len(data) < 62 or struct.unpack(">H", data[:2])[0] != tid:
+                continue
+            if not (data[2] & 0x80) or data[3] & 0x0F:     # not a response, or an error
+                continue
+            return socket.inet_ntoa(data[58:62])           # header 12 + name 34 + 10 + flags 2
+    except OSError:
+        return ""
+    finally:
+        s.close()
+
+print(nbns(sys.argv[1]))
+NBEOF
+)
+    # stderr: stdout is the answer, and the caller captures it.
+    [ -n "$a" ] && log "$h is a network name, not a DNS one; found it at $a" >&2
+  fi
+  echo "$a"
+}
+
 while IFS=$'\t' read -r SID ISDEF HOST SHARE USER DOMAIN; do
   [ -n "${SID:-}" ] || continue
   if [ "$ISDEF" = "1" ]; then TARGET="$MOUNT"; else TARGET="$MOUNT-$SID"; fi
@@ -133,13 +182,21 @@ PYEOF
   # uninterruptible sleep -- D4 says the cable gets pulled, and a hung mount is the one
   # state this appliance cannot recover from on its own.
   BASE="credentials=$CRED,uid=$UID_R,gid=$GID_R,file_mode=0664,dir_mode=0775,soft,noatime"
-  DONE=0
+  ADDR=$(resolve "$HOST")
+  if [ -z "$ADDR" ]; then
+    log "could not find $HOST by DNS or by network name — rips bound for it will stage on the card instead"
+    rm -f "$CRED"; continue
+  fi
+  [ "$ADDR" != "$HOST" ] && BASE="$BASE,ip=$ADDR"
+
+  DONE=0; ERR=""
   for VERS in 3.1.1 3.0 2.1; do
-    if mount -t cifs "//$HOST/$SHARE" "$TARGET" -o "$BASE,vers=$VERS" 2>/dev/null; then
-      log "mounted //$HOST/$SHARE at $TARGET (SMB $VERS)"; DONE=1; break
+    # Keep the error: thrown away, every failure here looked like a NAS that was off.
+    if ERR=$(mount -t cifs "//$HOST/$SHARE" "$TARGET" -o "$BASE,vers=$VERS" 2>&1); then
+      log "mounted //$HOST/$SHARE at $TARGET (SMB $VERS, $ADDR)"; DONE=1; break
     fi
   done
-  [ "$DONE" = "1" ] || log "could not mount //$HOST/$SHARE — rips bound for it will stage on the card instead"
+  [ "$DONE" = "1" ] || log "could not mount //$HOST/$SHARE at $ADDR: ${ERR:-no error given} — rips bound for it will stage on the card instead"
   rm -f "$CRED"
 done <<< "$ROWS"
 
