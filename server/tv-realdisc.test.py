@@ -121,6 +121,26 @@ warnings = tv.plan_warnings(plan, found, eps)
 check("the user is told about the left-out title",
       any("Title 21 is episode-length (21 min)" in w for w in warnings), True)
 
+
+# ── Samurai Jack, The Complete Third Season (Blu-ray, 2026-10-12) ────────────
+
+print("")
+print("Samurai Jack season 3: the plain one -- everything where it should be")
+titles, eps = load("samurai-jack-s3-bluray.info.txt", "tvmaze-1603-samurai-jack.json")
+found = tv.analyse(titles, MAKEMKV_MIN)
+check("thirteen episodes in playlist order, confirmed by the play-all",
+      ([t["index"] for t in found["episodes"]], found["order_source"]),
+      ([0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], "segments"))
+check("three extras, the 4:56 one included",
+      sorted(t["index"] for t in found["extras"]), [4, 19, 21])
+check("nothing left outside the play-all", found["outside_play_all"], [])
+plan = tv.build_plan(found, season=3, first_episode=1,
+                     series={"id": 1603, "name": "Samurai Jack", "year": "2001"},
+                     episode_list=eps)
+check("named in order",
+      [plan["episodes"][i]["episode_title"] for i in (0, 10, 12)],
+      ["Chicken Jack", "The Birth of Evil (1)", "Jack and the Labyrinth"])
+
 print("")
 if failures:
     print("%d FAILED: %s" % (len(failures), ", ".join(failures)))
