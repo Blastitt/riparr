@@ -1435,7 +1435,7 @@ def _identify_season(job, s, d, titles, remembered):
 
     resumed = _resume_partial(job)
     if resumed:
-        left = [r for r in season_rows(resumed) if r.get("state") != "done"]
+        left = [r for r in season_rows(resumed) if r.get("state") == "pending"]
         log.info("Job %d: carrying on job %d -- %d left to read", job["id"],
                  resumed["resumed_from"], len(left))
         return True, _commit_season(job, s, d, titles, resumed)
