@@ -1364,6 +1364,7 @@ class DiscAnswer(BaseModel):
     include: List[int] = None           # title indexes to keep; None means keep all
     episode_titles: Dict[str, str] = None   # title index -> a name typed by hand
     order: List[int] = None             # title indexes, in the order they should go
+    extras: Dict[str, str] = None       # extras to rip: title index -> what to call it
 
 
 @app.post("/api/queue/{job_id}/answer")
@@ -1376,7 +1377,8 @@ def rip_answer(job_id: int, body: DiscAnswer, user=Depends(require_user)):
                              name=(body.name or "").strip(), skip=body.skip,
                              season=body.season, first_episode=body.first_episode,
                              series_id=body.series_id, include=body.include,
-                             episode_titles=body.episode_titles, order=body.order)
+                             episode_titles=body.episode_titles, order=body.order,
+                             extras=body.extras)
     if not ok:
         raise HTTPException(status_code=400, detail=message)
     return {"ok": True, "message": message}

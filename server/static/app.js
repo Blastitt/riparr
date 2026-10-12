@@ -1220,6 +1220,24 @@ function seasonPrompt(j) {
         ${rows.map((e, i) => episodeRow(e, i, rows.length)).join("")}
       </div>
 
+      ${(plan.extras || []).length ? `
+        <details class="ep-extras"${(plan.extras || []).some(x => x.include) ? " open" : ""}>
+          <summary>${plan.extras.length} extra${plan.extras.length === 1 ? "" : "s"} on this
+            disc <span class="muted">— tick any you want; they go in the show's
+            Featurettes folder, where Plex and Jellyfin look</span></summary>
+          <div class="ep-table" id="ep-extras">
+            ${plan.extras.map(x => `
+              <div class="ep-row ep-extra${x.include ? "" : " dropped"}" data-xi="${x.title_index}">
+                <input type="checkbox" class="ep-keep" ${x.include ? "checked" : ""}>
+                <span class="ep-num muted">Extra</span>
+                <span class="ep-dur">${esc(duration(x.seconds))}</span>
+                <input class="ep-title" value="${esc(x.name || "")}" placeholder="What is it?">
+                <span class="ep-src muted">Title ${x.title_index}</span>
+                <span class="ep-move"></span>
+              </div>`).join("")}
+          </div>
+        </details>` : ""}
+
       <div class="btn-row">
         <button class="btn primary" data-answer-season="${j.id}">
           Rip ${rows.length} episode${rows.length === 1 ? "" : "s"}</button>
@@ -4137,10 +4155,16 @@ function wireContent(section, sub) {
       return;
     }
     const picked = ($("#ep-series") || {}).value;
+    const extras = {};
+    $$("#ep-extras .ep-extra").forEach(r => {
+      if (r.querySelector(".ep-keep").checked) {
+        extras[r.dataset.xi] = r.querySelector(".ep-title").value.trim() || "Extra";
+      }
+    });
     const body = {
       season: Number(season),
       first_episode: Number(($("#ep-first") || {}).value || 1),
-      include, order, episode_titles: titles,
+      include, order, episode_titles: titles, extras,
       name: (($("#ep-name") || {}).value || "").trim(),
     };
     if (picked) body.series_id = Number(picked);
@@ -4188,6 +4212,21 @@ function wireContent(section, sub) {
   $$("[data-up]").forEach(b => b.onclick = () => moveRow(Number(b.dataset.up), -1));
   $$("[data-down]").forEach(b => b.onclick = () => moveRow(Number(b.dataset.down), 1));
   $$("#ep-rows .ep-keep").forEach(c => c.onchange = renumberRows);
+  // The button says what it will do, extras included, so ticking one is visibly taken.
+  const ripLabel = () => {
+    const b = $("[data-answer-season]");
+    if (!b) return;
+    const n = $$("#ep-rows .ep-keep").filter(c => c.checked).length;
+    const x = $$("#ep-extras .ep-keep").filter(c => c.checked).length;
+    b.textContent = `Rip ${n} episode${n === 1 ? "" : "s"}` +
+      (x ? ` and ${x} extra${x === 1 ? "" : "s"}` : "");
+  };
+  $$("#ep-extras .ep-keep").forEach(c => c.onchange = () => {
+    c.closest(".ep-row").classList.toggle("dropped", !c.checked);
+    ripLabel();
+  });
+  $$("#ep-rows .ep-keep").forEach(c => c.addEventListener("change", ripLabel));
+  ripLabel();
   ["ep-season", "ep-first"].forEach(id => {
     const el = $("#" + id);
     if (el) el.oninput = renumberRows;

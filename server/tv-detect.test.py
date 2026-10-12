@@ -157,6 +157,24 @@ check("and the 2x title is the play-all", f_two["play_all"]["index"], 2)
 TWO_DVD = [t(0, 44), t(1, 43.3), t(2, 85)]
 check("on a DVD too, by adding up", len(tv.analyse(TWO_DVD, FLOOR)["episodes"]), 2)
 
+print("eleven-minute cartoons are episodes, not extras")
+CARTOONS = [t(i, 11 + (i % 3) * 0.2, 0.6, "%05d.mpls" % (800 + i), str(i)) for i in range(20)] + [
+    t(40, 4, 0.2, "00900.mpls", "90"), t(41, 6, 0.3, "00901.mpls", "91")]
+f_c = tv.analyse(CARTOONS, FLOOR)
+check("twenty of them", f_c and len(f_c["episodes"]), 20)
+SHORTS = [t(i, 7, 0.4, "%05d.mpls" % (800 + i), str(i)) for i in range(12)]
+check("seven-minute shorts too", len(tv.analyse(SHORTS, FLOOR)["episodes"]), 12)
+DELETED = [t(0, 118, 30, "00800.mpls", "1")] + [
+    t(i, 6 + i * 0.1, 0.3, "%05d.mpls" % (900 + i), str(10 + i)) for i in range(1, 7)]
+check("a film with six short deleted scenes is still a film", tv.analyse(DELETED, FLOOR), None)
+print("many short featurettes do not outvote fewer, longer episodes")
+MIXED = [t(i, 42 + i * 0.3, 3.9, "%05d.mpls" % (800 + i), str(i)) for i in range(6)] + [
+    t(20 + i, 8 + i * 0.1, 0.5, "%05d.mpls" % (900 + i), str(20 + i)) for i in range(10)]
+f_m = tv.analyse(MIXED, FLOOR)
+check("the six episodes win on running time", sorted(e["index"] for e in f_m["episodes"]),
+      list(range(6)))
+check("and the ten featurettes are extras", len(f_m["extras"]), 10)
+
 # ── ordering ─────────────────────────────────────────────────────────────────
 
 print("segment map beats playlist numbering when they disagree")

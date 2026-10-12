@@ -1179,6 +1179,12 @@ tr.hist.cancelled > td.stat { color: var(--fg-muted); }
 .ep-row:hover { background: rgba(255,255,255,.04); }
 .ep-row.dropped { opacity: .45; }
 .ep-row.dropped .ep-title { text-decoration: line-through; }
+/* An unticked extra is the normal case, not a rejected one: dim it, don't strike it. */
+.ep-row.ep-extra.dropped .ep-title { text-decoration: none; }
+.ep-extras { margin: -4px 0 14px; }
+.ep-extras > summary { cursor: pointer; font-size: 13px; padding: 6px 0; }
+.ep-extras .ep-table { margin: 6px 0 0; }
+.ep-extra .ep-move { width: 52px; }
 .ep-num { color: var(--fg-strong); font-variant-numeric: tabular-nums;
           font-weight: 500; }
 .ep-dur { color: var(--fg-muted); font-variant-numeric: tabular-nums; }

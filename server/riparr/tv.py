@@ -56,11 +56,22 @@ API = "https://api.tvmaze.com"
 
 # ── what counts as an episode ────────────────────────────────────────────────
 
-# Nothing shorter than this is ever an episode. A ten-minute featurette is common on a
-# season disc and a ten-minute episode essentially is not, outside of shorts nobody
-# presses to Blu-ray. Deliberately below the 22 minutes of a half-hour sitcom so that
-# the *clustering* decides what an episode is, not this number.
+# Nothing shorter than this is an ordinary episode. A ten-minute featurette is common
+# on a season disc; the *clustering* decides what an episode is above this line.
 EPISODE_MIN_SECONDS = 900
+
+# ...but short episodes exist, and pressed to disc constantly: every eleven-minute
+# cartoon (SpongeBob, Adventure Time, Regular Show), seven-minute shorts collections,
+# webisodes. A hard floor at fifteen minutes threw those whole discs away as "extras",
+# one of the commonest TV complaints on the MakeMKV forums. So titles from five to
+# fifteen minutes are a second tier: they are the episodes only when there is no group
+# of longer ones, or when they hold far more of the disc than the longer group does --
+# see `_episode_cluster`. Ranking everything together by count let ten 8-minute
+# featurettes outvote six real episodes; ranking by running time let a five-hour
+# play-all outvote the thirteen episodes it contains (the real Samurai Jack disc).
+SHORT_EPISODE_MIN_SECONDS = 300
+SHORT_TIER_MIN_COUNT = 4
+SHORT_TIER_DOMINANCE = 2.0
 
 # Two titles this far apart in runtime are still the same show. Episodes of one season
 # vary by a minute or two either side; the tolerance has to cover that without being so
@@ -210,7 +221,7 @@ def _largest_cluster(titles):
     it works the same for a 22-minute sitcom and a 55-minute drama without being told
     which it is looking at.
     """
-    best = []
+    best, best_key = [], None
     for anchor in titles:
         lo = anchor["seconds"] * (1 - CLUSTER_TOLERANCE)
         hi = anchor["seconds"] * (1 + CLUSTER_TOLERANCE)
@@ -219,9 +230,26 @@ def _largest_cluster(titles):
         # three 42-minute episodes and three 8-minute featurettes should resolve to the
         # episodes. (Featurettes rarely cluster this tightly, but ties are cheap to
         # break correctly and expensive to get wrong.)
-        if (len(group), anchor["seconds"]) > (len(best), best[0]["seconds"] if best else 0):
-            best = group
+        key = (len(group), anchor["seconds"])
+        if not best or key > best_key:
+            best, best_key = group, key
     return best
+
+
+def _episode_cluster(titles):
+    """The episodes' cluster, with short episodes as a second tier. See
+    SHORT_EPISODE_MIN_SECONDS for why it is two tiers rather than one ranking."""
+    long_ = _largest_cluster([t for t in titles if t["seconds"] >= EPISODE_MIN_SECONDS])
+    short = _largest_cluster([t for t in titles
+                              if SHORT_EPISODE_MIN_SECONDS <= t["seconds"] < EPISODE_MIN_SECONDS])
+    if len(short) < MIN_EPISODES:
+        return long_
+    if len(long_) < MIN_EPISODES:
+        return short
+    if (len(short) >= SHORT_TIER_MIN_COUNT and sum(t["seconds"] for t in short)
+            > SHORT_TIER_DOMINANCE * sum(t["seconds"] for t in long_)):
+        return short
+    return long_
 
 
 def _find_play_all(titles, episode_seconds):
@@ -358,7 +386,7 @@ def analyse(titles, min_seconds=120):
     if not titles:
         return None
 
-    floor = max(int(min_seconds or 0), EPISODE_MIN_SECONDS)
+    floor = max(int(min_seconds or 0), SHORT_EPISODE_MIN_SECONDS)
     candidates = [t for t in titles if t.get("seconds", 0) >= floor]
     if len(candidates) < MIN_EPISODES:
         return None
@@ -373,7 +401,7 @@ def analyse(titles, min_seconds=120):
     # to find its yardstick is safe to do on the raw list, because duplicates cluster
     # with the episodes they duplicate -- they make that cluster larger and its median
     # no less correct.
-    rough = _largest_cluster(candidates)
+    rough = _episode_cluster(candidates)
     if len(rough) < MIN_EPISODES:
         return None
     play_all = _find_play_all(candidates, _median([t["seconds"] for t in rough]))
@@ -399,7 +427,7 @@ def analyse(titles, min_seconds=120):
     gone = {t["index"] for t in compilations} | {(play_all or {}).get("index")}
     remaining = [t for t in candidates if t["index"] not in gone]
     unique = _dedup(remaining)
-    cluster = _largest_cluster(unique)
+    cluster = _episode_cluster(unique)
     if len(cluster) < MIN_EPISODES:
         return None
     episode_seconds = _median([t["seconds"] for t in cluster])
@@ -437,6 +465,12 @@ def analyse(titles, min_seconds=120):
     chosen = {t["index"] for t in ordered}
     if play_all:
         chosen.add(play_all["index"])
+    # Duplicate playlists and compilations are the episodes again, not extras. Listed
+    # as extras, the six "without the trailer" copies of a season appeared as six
+    # forty-minute bonus features -- harmless while extras could only be looked at, and
+    # a way to rip the season twice once they could be ticked.
+    chosen |= {t["index"] for t in remaining if t not in unique}
+    chosen |= {t["index"] for t in compilations}
     # Extras are listed at the user's own floor, not the episode floor: a ten-minute
     # featurette is exactly the thing somebody wants to see was found and skipped.
     extras = [t for t in titles

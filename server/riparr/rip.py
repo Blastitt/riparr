@@ -430,7 +430,7 @@ def cancel(job_id):
 
 def answer(job_id, title_index=None, name=None, skip=False, season=None,
            first_episode=None, series_id=None, include=None, episode_titles=None,
-           order=None):
+           order=None, extras=None):
     """Resolve a `needs_input` job -- the other half of `on_unknown_disc: ask`.
 
     The answer is written to the disc record as well as the job, because the whole
@@ -461,7 +461,8 @@ def answer(job_id, title_index=None, name=None, skip=False, season=None,
     remember = {}
     if plan.get("episodes"):
         plan, message = _apply_season_answer(job, plan, season, first_episode,
-                                             series_id, include, episode_titles, order)
+                                             series_id, include, episode_titles, order,
+                                             extras)
         if message:
             return False, message
         fields["episode_plan"] = plan
@@ -489,7 +490,7 @@ def answer(job_id, title_index=None, name=None, skip=False, season=None,
 
 
 def _apply_season_answer(job, plan, season, first_episode, series_id, include,
-                         episode_titles, order):
+                         episode_titles, order, extras=None):
     """Fold a human's corrections into a stored season plan. Returns (plan, error).
 
     Renumbering happens *after* reordering and after the inclusion list is applied, so
@@ -500,6 +501,14 @@ def _apply_season_answer(job, plan, season, first_episode, series_id, include,
     """
     rows = plan.get("episodes") or []
     by_index = {int(r["title_index"]): r for r in rows}
+
+    # Extras to keep, as {title index: name}. Anything not named is left unticked.
+    if extras is not None:
+        for x in plan.get("extras") or []:
+            name = extras.get(str(x["title_index"]), extras.get(x["title_index"]))
+            x["include"] = name is not None
+            if name is not None and str(name).strip():
+                x["name"] = str(name).strip()
 
     if order:
         try:
@@ -1504,8 +1513,12 @@ def _identify_season(job, s, d, titles, remembered):
             "plays first, change \u201cfirst episode\u201d and the whole disc "
             "renumbers."))
     plan["series_options"] = options
+    # Offered, unticked. Most people want the episodes and nothing else; the ones who
+    # want the featurettes want them filed where Plex and Jellyfin will show them.
     plan["extras"] = [{"title_index": t["index"], "seconds": t["seconds"],
-                       "bytes": t.get("bytes") or 0} for t in found["extras"]]
+                       "bytes": t.get("bytes") or 0, "extra": True, "include": False,
+                       "name": "Extra %d" % n, "state": "pending"}
+                      for n, t in enumerate(found["extras"], 1)]
     for row in plan["episodes"]:
         row["state"] = "pending"
         row["include"] = True
@@ -1566,7 +1579,7 @@ def _identify_season(job, s, d, titles, remembered):
 
 def _commit_season(job, s, d, titles, plan):
     """Settle a season plan onto the job and hand it to the rip stage."""
-    rows = [e for e in plan.get("episodes") or [] if e.get("include", True)]
+    rows = season_rows(plan)
     if not rows:
         raise RipFailed("Nothing on this disc was ticked, so there is nothing to rip.")
 
@@ -1893,8 +1906,32 @@ def _run_makemkv(job, s, title_index, out_dir, cancel_ev, total_bytes,
     return os.path.join(out_dir, produced[0])
 
 
+def season_rows(plan):
+    """Everything a season job writes: the ticked episodes, then any ticked extras.
+
+    Extras live in their own list on the plan rather than as rows among the episodes,
+    because every piece of numbering -- renumbering after an untick, where the next
+    disc starts, what a gap in the set looks like -- reads the episodes and must not
+    have to step around rows that have no episode number.
+    """
+    return ([e for e in plan.get("episodes") or [] if e.get("include", True)]
+            + [x for x in plan.get("extras") or [] if x.get("include")])
+
+
+def _row_dir(row):
+    if row.get("extra"):
+        return "extra-t%02d" % int(row["title_index"])
+    return "ep-%02d" % int(row["episode"])
+
+
+# Plex and Jellyfin both read this folder name inside a show's folder as its extras.
+EXTRAS_FOLDER = "Featurettes"
+
+
 def episode_label(row):
     """`S01E03`, or `S01E03-E04` for a two-episode file. For progress lines and logs."""
+    if row.get("extra"):
+        return row.get("name") or "an extra"
     season = row.get("season")
     head = "S%02dE%02d" % (int(season), int(row["episode"])) if season is not None \
         else "E%02d" % int(row["episode"])
@@ -1918,7 +1955,7 @@ def _rip_season(job, s, cancel_ev):
     look at, and so a retry can tell what is already done from what is not.
     """
     plan = job["_plan"]
-    rows = [e for e in plan["episodes"] if e.get("include", True)]
+    rows = season_rows(plan)
     kind = "tv"
     direct = use_direct(s, kind)
     base = _job_dir(job["id"], direct=direct, kind=kind)
@@ -1930,7 +1967,8 @@ def _rip_season(job, s, cancel_ev):
                        disc_family=job.get("disc_family"),
                        series_id=plan.get("series_id"), season=plan.get("season"),
                        series_name=plan.get("series"),
-                       first_episode=rows[0]["episode"] if rows else None)
+                       first_episode=next((r["episode"] for r in rows
+                                           if not r.get("extra")), None))
 
     db.update_job(job["id"], state="ripping", phase="Reading the disc",
                   local_path=base, bytes_ripped=0, stage_pct=0)
@@ -1946,9 +1984,10 @@ def _rip_season(job, s, cancel_ev):
         if row.get("state") == "done":
             done_before[0] += row.get("bytes") or 0
             continue
-        out_dir = os.path.join(base, "ep-%02d" % int(row["episode"]))
+        out_dir = os.path.join(base, _row_dir(row))
         os.makedirs(out_dir, exist_ok=True)
-        where = "Episode %d of %d — %s" % (n, len(rows), episode_label(row))
+        where = ("%d of %d — %s" % (n, len(rows), episode_label(row)) if row.get("extra")
+                 else "Episode %d of %d — %s" % (n, len(rows), episode_label(row)))
 
         def progress(done, eta, phase, _where=where):
             overall = done_before[0] + done
@@ -2237,7 +2276,24 @@ def _place_directly(job, s, local_path, name, transport, kind="movie"):
 
 
 def _episode_name(job, s, plan, row):
-    """The share-relative path one episode lands at."""
+    """The share-relative path one episode lands at.
+
+    An extra goes in the show's folder under `Featurettes`, which is where Plex and
+    Jellyfin both look. The show's folder is whatever the TV template makes of it, read
+    off a rendered episode path rather than assumed, so a custom template moves the
+    extras with the episodes.
+    """
+    if row.get("extra"):
+        probe = dict(season=plan.get("season") if plan.get("season") is not None else 1,
+                     episode=1, episode_last=1, episode_title="", extra=False)
+        show = _episode_name(job, s, plan, probe)
+        _share, folder = db.destination("tv")
+        rel = show[len(folder) + 1:] if folder and show.startswith(folder + "/") else show
+        parts = rel.split("/")
+        series_dir = parts[0] if len(parts) > 1 else ""
+        leaf = "%s.mkv" % sanitise((row.get("name") or "Extra").strip() or "Extra")
+        rel = "/".join(p for p in (series_dir, EXTRAS_FOLDER, leaf) if p)
+        return "%s/%s" % (folder, rel) if folder else rel
     _share, folder = db.destination("tv")
     title = plan.get("series") or job.get("title") or job.get("disc_label") or "Unknown"
     rel = _render_template(
@@ -2265,7 +2321,7 @@ def _transfer_season(job, s, base, cancel_ev):
     remaining three and does not re-send the ones already there.
     """
     plan = job["_plan"]
-    rows = [e for e in plan["episodes"] if e.get("include", True)]
+    rows = season_rows(plan)
     share, _folder = db.destination("tv")
     if not share:
         raise RipFailed("There's no library share configured, so the rip has nowhere "
@@ -2362,6 +2418,7 @@ def _season_folder(job, s, plan, rows):
     A season job has no single destination file, and reporting the last episode's path
     as though it were the job's answer reads as though only one thing was written.
     """
+    rows = [r for r in rows if not r.get("extra")] or rows
     if not rows:
         return ""
     name = rows[0].get("remote_name") or _episode_name(job, s, plan, rows[0])
@@ -2447,6 +2504,7 @@ def _finish_season(job, s, transport, folder, base, sent_from_card=False):
     now = int(time.time())
     plan = job["_plan"]
     rows = [e for e in plan["episodes"] if e.get("include", True)]
+    extras = [x for x in plan.get("extras") or [] if x.get("include")]
     db.stage_end(job["id"], at=now)
     if job.get("fingerprint"):
         db.record_disc(job["fingerprint"], label=job.get("disc_label"),
@@ -2476,9 +2534,10 @@ def _finish_season(job, s, transport, folder, base, sent_from_card=False):
                 else " (%s to %s)" % (episode_label(first), episode_label(last)))
     log.info("Job %d finished: %d episodes into %s", job["id"], len(rows), folder)
     notify.send("done", title=plan.get("series") or job.get("title") or "A disc",
-                body="%d episode%s ripped and verified%s. They're in your library at %s."
-                     % (len(rows), "" if len(rows) == 1 else "s", span,
-                        transport.describe(folder)))
+                body="%d episode%s%s ripped and verified%s. They're in your library at %s."
+                     % (len(rows), "" if len(rows) == 1 else "s",
+                        (" and %d extra%s" % (len(extras), "" if len(extras) == 1 else "s"))
+                        if extras else "", span, transport.describe(folder)))
 
 
 # ─────────────────────────── full-disc backup ───────────────────────────
@@ -3541,7 +3600,7 @@ def _reverify_season(job, plan, share, mode):
     row for this job, and six `verify` entries against it would make the stage timings
     meaningless for every other job they are averaged with.
     """
-    rows = [e for e in plan["episodes"]
+    rows = [e for e in (plan.get("episodes") or []) + (plan.get("extras") or [])
             if e.get("state") == "done" and e.get("remote_name")]
     if not rows:
         return False, "Riparr doesn't know where the episodes on this one landed."

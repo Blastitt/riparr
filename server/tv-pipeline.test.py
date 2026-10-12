@@ -203,6 +203,30 @@ b2 = run(new_job("COUNT_BACK_S02_D02"))
 check("ends right before disc three", db.episode_plan(b2)["episodes"][-1]["episode"], 12)
 check("so starts at 7", db.episode_plan(b2)["episodes"][0]["episode"], 7)
 
+# ── extras ──────────────────────────────────────────────────────────────────
+
+print("a ticked extra lands in Featurettes, beside the seasons")
+fresh_share()
+db.set("on_season_disc", "ask")
+xj = new_job("EXTRAS_SHOW_S01_D01")
+rip._identify(xj, rip._settings())
+xplan = db.episode_plan(db.get_job(xj["id"]))
+check("only the featurette is offered -- not the duplicate playlists",
+      [x["title_index"] for x in xplan["extras"]], [20])
+check("and it starts unticked", xplan["extras"][0]["include"], False)
+ok, _ = rip.answer(xj["id"], season=1, first_episode=1,
+                   extras={"20": "Behind the Scenes"})
+check("accepted", ok, True)
+xj = finish(xj["id"])
+check("the job finished", xj["state"], "done")
+files = share_files()
+check("six episodes and one extra", len(files), 7)
+check("the extra is in the show's Featurettes folder",
+      "nas/Media/TV/Extras Show/Featurettes/Behind the Scenes.mkv" in files, True)
+check("and it did not move the next disc's numbering",
+      db.next_episode(None, 1, series_name="Extras Show"), 7)
+db.set("on_season_disc", "auto")
+
 # ── the film path is unchanged ───────────────────────────────────────────────
 
 print("a film disc still rips as a film")
