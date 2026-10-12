@@ -1560,7 +1560,8 @@ def _identify_season(job, s, d, titles, remembered):
     # want the featurettes want them filed where Plex and Jellyfin will show them.
     plan["extras"] = [{"title_index": t["index"], "seconds": t["seconds"],
                        "bytes": t.get("bytes") or 0, "extra": True, "include": False,
-                       "name": "Extra %d" % n, "state": "pending"}
+                       "name": ("Season %d Extra %d" % (season, n) if season is not None
+                                else "Extra %d" % n), "state": "pending"}
                       for n, t in enumerate(found["extras"], 1)]
     for row in plan["episodes"]:
         row["state"] = "pending"
@@ -2490,6 +2491,8 @@ def _transfer_season(job, s, base, cancel_ev):
             raise RipFailed("%s went missing from the card before it could be sent."
                             % episode_label(row))
         name = _episode_name(job, s, plan, row)
+        if row.get("extra"):
+            name = _free_extra_name(transport, name)
         where = "Sending %s — %d of %d" % (episode_label(row), n, len(pending))
 
         db.stage_start(job["id"], "upload")
@@ -2567,6 +2570,26 @@ def _transfer_season(job, s, base, cancel_ev):
         shutil.rmtree(os.path.join(root, ".riparr-incoming", "job-%d" % job["id"]),
                       ignore_errors=True)
     return transport, _season_folder(job, s, plan, rows), base
+
+
+def _free_extra_name(transport, name):
+    """`name`, or `name (2)`, `(3)`... -- whichever is not taken.
+
+    Every season of a show shares one Featurettes folder, and extras are named by hand
+    or by number, so season 3's "Extra 2" is season 2's path too. An episode path that
+    exists is that episode ripped again and is replaced; an extra's is somebody else's
+    featurette, and a direct-mode rename would have replaced it without a word.
+    """
+    stem, ext = os.path.splitext(name)
+    candidate, n = name, 1
+    while True:
+        try:
+            if transport.size(candidate) is None:
+                return candidate
+        except Exception:
+            return candidate                 # cannot ask: proceed as before
+        n += 1
+        candidate = "%s (%d)%s" % (stem, n, ext)
 
 
 def _season_folder(job, s, plan, rows):

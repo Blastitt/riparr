@@ -305,8 +305,18 @@ files = share_files()
 check("six episodes and one extra", len(files), 7)
 check("the extra is in the show's Featurettes folder",
       "nas/Media/TV/Extras Show/Featurettes/Behind the Scenes.mkv" in files, True)
+xj2 = new_job("EXTRAS_SHOW_S01_D02")
+rip._identify(xj2, rip._settings())
+check("unnamed extras are named for their season",
+      db.episode_plan(db.get_job(xj2["id"]))["extras"][0]["name"], "Season 1 Extra 1")
+rip.answer(xj2["id"], extras={"20": "Behind the Scenes"})
+finish(xj2["id"])
+check("a second disc's extra with the same name sits beside the first, not over it",
+      sorted(f for f in share_files() if "Featurettes" in f),
+      ["nas/Media/TV/Extras Show/Featurettes/Behind the Scenes (2).mkv",
+       "nas/Media/TV/Extras Show/Featurettes/Behind the Scenes.mkv"])
 check("and it did not move the next disc's numbering",
-      db.next_episode(None, 1, series_name="Extras Show"), 7)
+      db.next_episode(None, 1, series_name="Extras Show"), 13)
 db.set("on_season_disc", "auto")
 
 # ── the film path is unchanged ───────────────────────────────────────────────
