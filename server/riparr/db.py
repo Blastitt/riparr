@@ -816,8 +816,21 @@ def next_episode(series_id, season, series_name=None):
         for e in plan.get("episodes") or []:
             if e.get("state") == "skipped":
                 continue
-            highest = max(highest, int(e.get("episode_last") or e.get("episode") or 0))
+            highest = max(highest, row_span(e)[1])
     return highest + 1 if highest else None
+
+
+def row_span(e):
+    """(first, last) of a plan row in *disc* order -- what continuation counts in.
+
+    `position` where the plan has one; plans from before DVD-order naming carry only
+    `episode`, which was the same number then.
+    """
+    first = int(e.get("position") or e.get("episode") or 0)
+    last = int(e.get("position_last") or e.get("episode_last") or 0)
+    if "position" not in e:
+        last = int(e.get("episode_last") or e.get("episode") or 0)
+    return first, max(first, last)
 
 
 def season_start(series_id, season, series_name=None, disc=None, count=0):
@@ -863,8 +876,8 @@ def season_start(series_id, season, series_name=None, disc=None, count=0):
         except (ValueError, TypeError):
             continue
         n = plan.get("disc")
-        nums = [(int(e.get("episode") or 0), int(e.get("episode_last") or e.get("episode") or 0))
-                for e in plan.get("episodes") or [] if e.get("state") != "skipped"]
+        nums = [row_span(e) for e in plan.get("episodes") or []
+                if e.get("state") != "skipped"]
         if not n or not nums:
             continue
         lo, hi = min(a for a, _ in nums), max(b for _, b in nums)
@@ -947,8 +960,12 @@ def drive_busy():
     back, and what it is doing now -- pushing bytes at a NAS -- has no claim on the
     drive at all.
     """
+    # Less a season that has already been read and is waiting only on its naming: its
+    # disc is out of the tray (see rip._hold_after_rip), and holding the drive for a
+    # question that can be answered tomorrow is what made a box set stop overnight.
     row = conn().execute(
-        "SELECT * FROM jobs WHERE state IN (%s) ORDER BY id LIMIT 1"
+        "SELECT * FROM jobs WHERE state IN (%s) "
+        "AND NOT (state='needs_input' AND local_path IS NOT NULL) ORDER BY id LIMIT 1"
         % ",".join("?" * len(DRIVE_STATES)), DRIVE_STATES).fetchone()
     return dict(row) if row else None
 

@@ -141,18 +141,19 @@ when it's there, the order is a fact and Riparr just uses it. When it isn't, the
 comes from the disc's playlist numbering, which is right on almost every disc but not
 all of them.
 
-**Riparr shows you the plan once per season** — on the first disc, where one correction
-fixes every disc after it — and again on any later disc whose order it couldn't read off
-the disc itself.
+**Riparr doesn't stop to ask about a disc it can read.** If something can't be worked
+out, such as a label with no season number or disc 3 arriving before disc 2, the disc is
+ripped and ejected anyway, and only the filing waits. Disc 3 files itself as soon as
+disc 2 is done.
 
 The names come from [TVmaze](https://www.tvmaze.com), which needs no account.
 
 **Disc order and broadcast order don't always agree.** Firefly is the famous one: the
-disc opens with "Serenity", but it aired second, so every episode guide numbers "The
-Train Job" as S01E01. Riparr always keeps the *disc's* order and only takes *names* from
-the lookup — so when the two disagree you see it immediately, on the plan, before
-anything is written. Shifting the first episode number renumbers and renames the whole
-disc in one move.
+disc opens with "Serenity", which aired last, so every episode guide numbers it S01E11.
+TVmaze keeps a DVD-order list for shows like this, and Riparr checks it. The first file
+off a Firefly disc is named `S01E11 - Serenity`, which is the number Plex and Jellyfin
+expect for it. The order always comes from the disc. The lookup only decides what each
+episode is called.
 
 **Later discs of the same season need no answer.** Correct disc one, and disc two
 carries on from where it stopped.

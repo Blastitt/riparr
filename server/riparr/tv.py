@@ -688,9 +688,118 @@ def episodes(series_id, include_specials=True):
     return out
 
 
+_dvd_cache = {}
+
+
+def dvd_order(series_id):
+    """TVmaze's DVD-release order for a series, or {} if it has none, or None if that
+    couldn't be found out.
+
+    The one question about a season disc that reading the disc cannot settle is whether
+    the disc runs in broadcast order. Most shows do; a few were released in production
+    order instead -- Firefly opens with "Serenity", which every guide numbers S01E11.
+    TVmaze publishes that second order as an "alternate list" (no account, no key), so
+    it is looked up rather than asked. Returns {(dvd season, dvd number): episode} where
+    episode is the broadcast-order {"season", "number", "name"} that position holds.
+
+    {} and None are different answers and the caller treats them differently: {} is
+    "TVmaze knows this show and it has no other order", which settles the question; None
+    is "couldn't ask", which leaves it open.
+    """
+    if not series_id:
+        return None
+    sid = int(series_id)
+    with _cache_lock:
+        hit = _dvd_cache.get(sid)
+        if hit and time.time() - hit[0] < CACHE_TTL:
+            return hit[1]
+    try:
+        lists = _get("%s/shows/%d/alternatelists" % (API, sid)) or []
+        chosen = next((x for x in lists if x.get("dvd_release")), None)
+        out = {}
+        if chosen:
+            raw = _get("%s/alternatelists/%d/alternateepisodes?embed=episodes"
+                       % (API, int(chosen["id"]))) or []
+            for a in raw:
+                aired = ((a.get("_embedded") or {}).get("episodes") or [None])[0]
+                if (a.get("season") is None or a.get("number") is None or not aired
+                        or aired.get("season") is None or aired.get("number") is None):
+                    continue
+                out[(int(a["season"]), int(a["number"]))] = {
+                    "season": int(aired["season"]), "number": int(aired["number"]),
+                    "name": aired.get("name") or a.get("name") or ""}
+    except Exception as e:
+        log.info("TVmaze DVD order for %s failed: %s", series_id, e)
+        return None
+    with _cache_lock:
+        _dvd_cache[sid] = (time.time(), out)
+    return out
+
+
+def dvd_map_for(dvd, season):
+    """The part of a DVD order that concerns one disc season, as {position: episode},
+    or {} when there is nothing that differs from broadcast order.
+
+    An identical list is dropped rather than carried: it changes no file, and a plan
+    that says "named from the DVD order" when nothing moved is noise.
+    """
+    if not dvd or season is None:
+        return {}
+    m = {n: e for (s, n), e in dvd.items() if s == season}
+    if all(e["season"] == season and e["number"] == n for n, e in m.items()):
+        return {}
+    return m
+
+
+def number_rows(rows, season, start, episode_list=None, dvd_map=None, typed=()):
+    """Number and name the episodes that will be written, in the order given.
+
+    Two numbers per row. `position` is where the episode sits in the season *as the
+    discs run* -- E01 on the first disc, carried on by the next -- and is what disc-to-
+    disc continuation and the "first episode" control count in. `episode` is the number
+    the file is named with, which is the broadcast number: the same as `position` for
+    almost every show, and, for a show whose DVD order differs, whatever broadcast
+    number the DVD position holds. Plex, Jellyfin and every guide number episodes in
+    broadcast order, so "Serenity" is S01E11 whichever disc slot it came from.
+
+    The mapping is used only when it covers every position on this disc. Half a disc
+    mapped and half counted would let two files claim one number.
+    """
+    by_number = {(e["season"], e["number"]): e for e in (episode_list or [])}
+    dvd_map = {int(k): v for k, v in (dvd_map or {}).items()}
+    kept = [r for r in rows if r.get("include", True)]
+    n, spans = int(start or 1), []
+    for r in kept:
+        span = int(r.get("span") or 0) or (
+            2 if int(r.get("episode_last") or r.get("episode") or 0)
+            > int(r.get("episode") or 0) else 1)
+        spans.append((r, n, span))
+        n += span
+    use_dvd = bool(dvd_map) and all(p + k in dvd_map for _, p, s in spans
+                                    for k in range(s))
+    for r, p, span in spans:
+        r["span"] = span
+        r["position"], r["position_last"] = p, p + span - 1
+        if use_dvd:
+            a, b = dvd_map[p], dvd_map[p + span - 1]
+            r["season"], r["episode"] = a["season"], a["number"]
+            r["episode_last"] = (b["number"] if b["season"] == a["season"]
+                                 and b["number"] == a["number"] + span - 1
+                                 else a["number"])
+            name = a.get("name") or ""
+        else:
+            r["season"], r["episode"], r["episode_last"] = season, p, p + span - 1
+            name = (by_number.get((season, p)) or {}).get("name") or "" \
+                if season is not None else ""
+        if int(r.get("title_index", -1)) not in typed:
+            r["episode_title"] = name
+    return use_dvd
+
+
 # ── turning all of that into a list of files ─────────────────────────────────
 
-def build_plan(found, season=None, first_episode=1, series=None, episode_list=None):
+def build_plan(found, season=None, first_episode=1, series=None, episode_list=None,
+               dvd_map=None):
     """The list of episodes to rip, numbered and named.
 
     Sequence comes from the disc (`found["episodes"]`, already ordered); numbers come
@@ -706,29 +815,19 @@ def build_plan(found, season=None, first_episode=1, series=None, episode_list=No
     A double-length title consumes two episode numbers and is named `S01E01-E02`, which
     is what Plex and Jellyfin both read as a two-episode file.
     """
-    by_number = {}
-    for e in (episode_list or []):
-        by_number[(e["season"], e["number"])] = e
-
-    plan = []
-    number = int(first_episode or 1)
-    for t in found["episodes"]:
-        span = 2 if t["index"] in (found.get("doubles") or []) else 1
-        numbers = list(range(number, number + span))
-        meta = by_number.get((season, numbers[0])) if season is not None else None
-        plan.append({
-            "title_index": t["index"],
-            "seconds": t["seconds"],
-            "bytes": t.get("bytes") or 0,
-            "season": season,
-            "episode": numbers[0],
-            "episode_last": numbers[-1],
-            "episode_title": (meta or {}).get("name") or "",
-            "source": t.get("source") or "",
-        })
-        number += span
+    plan = [{"title_index": t["index"],
+             "seconds": t["seconds"],
+             "bytes": t.get("bytes") or 0,
+             "span": 2 if t["index"] in (found.get("doubles") or []) else 1,
+             "source": t.get("source") or ""}
+            for t in found["episodes"]]
+    dvd_map = dvd_map or {}
+    used = number_rows(plan, season, first_episode, episode_list, dvd_map)
 
     return {
+        # Kept in the plan, not re-fetched: renumbering after a correction, in the page
+        # or on the box, has to map positions exactly as the first numbering did.
+        "dvd_map": {str(k): v for k, v in dvd_map.items()} if used else {},
         "series": (series or {}).get("name") or "",
         "series_id": (series or {}).get("id"),
         "series_year": (series or {}).get("year"),

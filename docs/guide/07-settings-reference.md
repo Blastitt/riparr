@@ -146,14 +146,14 @@ Bigger effect on file size than anything else here.
 | Setting | Notes |
 |---|---|
 | **Look for season discs** | On. A disc with several titles of the same length is read as a season rather than a film with decoys. Turn it off if you only own films. |
-| **Before ripping a season** | **Show me the plan when Riparr isn't sure** *(default)* / Always show me / Never. The default stops **once per season** — on the first disc, where one correction fixes every disc after it — and on any later disc whose order Riparr couldn't read off the disc. Reading the order off the disc is reliable; what it can't settle is whether the numbering matches your episode guide, since a few shows were released on disc in production order. **A disc with no season number always asks**, whatever this is set to, because there is no answer to get on with. |
+| **Before ripping a season** | **Show me the plan when Riparr isn't sure** *(default)* / Always show me / Never. The default never holds the drive: a disc Riparr can read and name is ripped and filed without stopping. When something can't be worked out (no season on the label, an earlier disc of the set not ripped yet, or no internet to check the episode guide), the disc is still ripped and ejected, and only the filing waits for you on the Queue page. A disc ripped before the one ahead of it files itself once that disc is done. **Always show me** stops before ripping, so you can untick episodes or pick extras first. |
 | **Look up episode names** | On. From [TVmaze](https://www.tvmaze.com), no account needed. Off gives correctly numbered files with no names — Plex and Jellyfin match on the numbers, so they still land correctly. |
 | **Specials go in** | `Season 00` *(default)* / `Specials`. Both are read as season zero. Set the season to 0 on the episode plan to file a disc here. |
 
 The episode plan is a table, one row per file that will be written. Untick a row to skip
 it, use the arrows to move an episode, type over a name to correct it, or change **first
 episode** to shift the whole disc — the numbers and names update together as you go.
-Later discs of the same season carry on from where the last one stopped without asking.
+Later discs of the same season carry on from where the last one stopped without asking. A plan that waits after ripping works the same way, except it says **File** instead of **Rip**, and only the extras that were read can be ticked.
 
 Keeping every language and commentary can roughly double file size for no benefit most
 people notice.

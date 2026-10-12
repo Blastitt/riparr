@@ -448,6 +448,10 @@ def answer(job_id, title_index=None, name=None, skip=False, season=None,
     if skip:
         db.update_job(job_id, state="cancelled", question=None,
                       finished_at=int(time.time()), error="Skipped")
+        if job.get("local_path"):
+            # Read already, and its disc long gone -- the tray may hold the next one.
+            _cleanup_staging(job)
+            return True, "Skipped. The episodes it read have been discarded."
         P.eject()
         return True, "Skipped, and the disc has been ejected."
 
@@ -460,11 +464,17 @@ def answer(job_id, title_index=None, name=None, skip=False, season=None,
     plan = db.episode_plan(job)
     remember = {}
     if plan.get("episodes"):
+        proposed = plan.get("series") or ""
         plan, message = _apply_season_answer(job, plan, season, first_episode,
                                              series_id, include, episode_titles, order,
                                              extras)
         if message:
             return False, message
+        # The page always sends the folder-name box. Edited, it is the folder; unedited
+        # it is just the old proposal, which must not undo a series picked in the list.
+        # It used to lose to the matched series every time, so a typed name was ignored.
+        if name and name != proposed:
+            plan["series"] = name
         fields["episode_plan"] = plan
         fields["season"] = plan.get("season")
         fields["series_id"] = plan.get("series_id")
@@ -475,7 +485,17 @@ def answer(job_id, title_index=None, name=None, skip=False, season=None,
             return False, "Tick at least one episode, or skip the disc."
         remember = {"series_id": plan.get("series_id"), "season": plan.get("season"),
                     "series_name": plan.get("series"),
-                    "first_episode": kept[0]["episode"]}
+                    "first_episode": db.row_span(kept[0])[0]}
+        if plan.get("hold") and job.get("local_path"):
+            # Already read and ejected: this answer was only ever about the names. Off
+            # to the sender, not back through the rip worker and the drive.
+            if job.get("fingerprint"):
+                db.record_disc(job["fingerprint"],
+                               **{k: v for k, v in remember.items() if v is not None})
+            if name:
+                db.update_job(job_id, title=name)
+            _release_held(job_id, plan)
+            return True, "Thanks — filing them in your library."
 
     db.update_job(job_id, **fields)
     if job.get("fingerprint"):
@@ -503,9 +523,12 @@ def _apply_season_answer(job, plan, season, first_episode, series_id, include,
     by_index = {int(r["title_index"]): r for r in rows}
 
     # Extras to keep, as {title index: name}. Anything not named is left unticked.
+    ripped = bool(job.get("local_path")) and bool(plan.get("hold"))
     if extras is not None:
         for x in plan.get("extras") or []:
             name = extras.get(str(x["title_index"]), extras.get(x["title_index"]))
+            if ripped and x.get("state") != "ripped":
+                name = None                 # the disc is gone; it can't be read now
             x["include"] = name is not None
             if name is not None and str(name).strip():
                 x["name"] = str(name).strip()
@@ -551,39 +574,37 @@ def _apply_season_answer(job, plan, season, first_episode, series_id, include,
     if season is not None:
         plan["season"] = int(season)
 
-    # Renumber from the start point, over the episodes that survived, preserving the
-    # two-number span of any double-length title.
+    # Renumber from the start point (a disc position), over the episodes that survived,
+    # preserving the two-number span of any double-length title -- and name them again
+    # by the numbers just assigned. That is what makes "the disc doesn't start where
+    # the guide does" a one-control fix: shift the start, and every episode picks up
+    # the name that belongs to its new number.
     start = int(first_episode) if first_episode is not None else None
     if start is None:
         kept = [r for r in rows if r.get("include", True)]
-        start = int(kept[0]["episode"]) if kept else 1
-    n = start
+        start = db.row_span(kept[0])[0] if kept else 1
     for r in rows:
         if not r.get("include", True):
             r["state"] = "skipped"
-            continue
-        r["state"] = "pending"
-        span = 2 if int(r.get("episode_last") or r["episode"]) > int(r["episode"]) else 1
-        r["season"] = plan.get("season")
-        r["episode"] = n
-        r["episode_last"] = n + span - 1
-        n += span
-
+        elif r.get("state") not in ("ripped", "done"):
+            r["state"] = "pending"
+        elif r.get("state") == "ripped" and not (r.get("path")
+                                                 and os.path.exists(r["path"])):
+            r["state"] = "pending"
     plan["episodes"] = rows
-    # Names are looked up again by the numbers we just assigned. This is the step that
-    # makes "the disc is not in aired order" a one-control fix: shift the start, and
-    # every episode picks up the name that belongs to its new number.
-    if plan.get("series_id") and plan.get("season") is not None:
-        known = {(e["season"], e["number"]): e
-                 for e in tv.episodes(plan["series_id"])}
-        for r in rows:
-            if not r.get("include", True):
-                continue
-            if int(r["title_index"]) in typed:
-                continue
-            meta = known.get((plan["season"], r["episode"]))
-            if meta:
-                r["episode_title"] = meta.get("name") or ""
+    episode_list = (tv.episodes(plan["series_id"])
+                    if plan.get("series_id") and plan.get("season") is not None else [])
+    dvd_map = plan.get("dvd_map") or {}
+    if series_id is not None or season is not None:
+        # A different show or season is a different DVD order, or none.
+        dvd = tv.dvd_order(plan["series_id"]) if episode_list else None
+        dvd_map = tv.dvd_map_for(dvd, plan.get("season"))
+    # Typed names stay; with no metadata at all, so do the ones already there.
+    keep_names = typed if episode_list or dvd_map else {int(r["title_index"])
+                                                         for r in rows}
+    used = tv.number_rows(rows, plan.get("season"), start, episode_list, dvd_map,
+                          typed=keep_names)
+    plan["dvd_map"] = {str(k): v for k, v in dvd_map.items()} if used else {}
     return plan, None
 
 
@@ -1483,8 +1504,12 @@ def _identify_season(job, s, d, titles, remembered):
     # one worth stopping on: a correction made there propagates to every disc after it.
     first_of_season = not continued and remembered.get("first_episode") is None
 
+    # Whether this show was released on disc in another order than it aired. Asked
+    # only of a show TVmaze knows, and only when names are going on the files; None
+    # means the question could not be put, which leaves it open (see `unsettled`).
+    dvd = tv.dvd_order(series["id"]) if series and episode_list else None
     plan = tv.build_plan(found, season=season, first_episode=first, series=series,
-                         episode_list=episode_list)
+                         episode_list=episode_list, dvd_map=tv.dvd_map_for(dvd, season))
     # With metadata off, or with no internet, there is no series record -- but there is
     # still a name, read off the volume label, and it is the one every downstream step
     # uses: the folder, the filename, and the key that lets the next disc of this season
@@ -1500,13 +1525,24 @@ def _identify_season(job, s, d, titles, remembered):
             "This is disc %d, and the disc before it hasn't been ripped yet, so Riparr "
             "can't know where its episodes start. E%02d is a guess from the other discs "
             "— check it, or rip the earlier disc first." % (disc_no, first)))
-    if first_of_season and any(e["episode_title"] for e in plan["episodes"]):
-        # The one thing no amount of reading the disc can settle. TVmaze and TVDB both
-        # publish *aired* order, and a handful of shows were released on disc in
-        # production order instead -- Firefly being the standard example, where the disc
-        # opens with "Serenity" and every guide numbers "The Train Job" as episode one.
-        # Riparr cannot tell which kind of show this is, so it says so, once, on the
-        # disc where fixing it is one control.
+    named = any(e["episode_title"] for e in plan["episodes"])
+    # The one thing reading the disc cannot settle: TVmaze and TVDB number episodes in
+    # *aired* order, and a handful of shows were released on disc in production order
+    # instead -- Firefly, where the disc opens with "Serenity" and every guide numbers
+    # "The Train Job" as episode one. TVmaze's DVD-release list settles it when it can
+    # be asked (`dvd` is a dict, empty or not); when it can't -- no internet, or a show
+    # TVmaze doesn't know -- the question stays open, and is shown once, on the first
+    # disc of the season, where fixing it is one control.
+    unsettled = first_of_season and named and dvd is None
+    if plan.get("dvd_map"):
+        top = plan["episodes"][0]
+        plan["warnings"].insert(0, (
+            "This show was released on disc in a different order from how it aired, so "
+            "the files are named from TVmaze's DVD order: the first episode on this disc "
+            "is the one TV guides call %s%s." % (
+                episode_label(top),
+                " (“%s”)" % top["episode_title"] if top["episode_title"] else "")))
+    if unsettled:
         plan["warnings"].insert(0, (
             "These names are in broadcast order. A few shows were released on disc in "
             "a different order \u2014 if the first episode here isn't what actually "
@@ -1548,7 +1584,7 @@ def _identify_season(job, s, d, titles, remembered):
            or guessed
            or behaviour == "ask"
            or (behaviour == "unsure"
-               and (found["confidence"] != "high" or first_of_season)))
+               and (found["confidence"] != "high" or unsettled)))
 
     db.update_job(job["id"], kind="tv", titles=titles, episode_plan=plan,
                   season=season, series_id=(series or {}).get("id"),
@@ -1556,6 +1592,30 @@ def _identify_season(job, s, d, titles, remembered):
                   disc_label=label or None, disc_family=disc_family(d),
                   disc_bytes=int(d.get("size_bytes") or 0),
                   bytes_total=sum(e["bytes"] for e in plan["episodes"]))
+
+    # Only "always show me" stops before the rip. Every other question is about what the
+    # files are *called*, and none of that needs the disc: it is read now, ejected, and
+    # the naming waits for an answer -- or, for a disc that arrived before its
+    # predecessor, for that disc (`_settle_held`). A box set fed in overnight, or over
+    # a VPN from somebody else's sofa, must never sit behind a question.
+    if ask and behaviour != "ask":
+        n = len(plan["episodes"])
+        plan["hold"] = {
+            "reason": ("season" if season is None else "guessed" if guessed
+                       else "order"),
+            "question": (
+                "Ripped and ejected, but nothing on the disc says which season this "
+                "is. Set it and Riparr files the %d episode%s." % (n, "" if n == 1 else "s")
+                if season is None else
+                "Ripped and ejected. Riparr is waiting for disc %d to be ripped to know "
+                "where these episodes start — or check the numbering and it files them "
+                "now." % (disc_no - 1) if guessed else
+                "Ripped and ejected. Check the episode order and Riparr files them."),
+        }
+        db.update_job(job["id"], episode_plan=plan)
+        log.info("Job %d: ripping first, naming later (%s)", job["id"],
+                 plan["hold"]["reason"])
+        return True, _commit_season(job, s, d, titles, plan)
 
     if ask:
         n = len(plan["episodes"])
@@ -1967,7 +2027,7 @@ def _rip_season(job, s, cancel_ev):
                        disc_family=job.get("disc_family"),
                        series_id=plan.get("series_id"), season=plan.get("season"),
                        series_name=plan.get("series"),
-                       first_episode=next((r["episode"] for r in rows
+                       first_episode=next((db.row_span(r)[0] for r in rows
                                            if not r.get("extra")), None))
 
     db.update_job(job["id"], state="ripping", phase="Reading the disc",
@@ -2509,6 +2569,73 @@ def _finish(job, s, transport, name, local_path, sent_from_card=False):
                 body="%s. It's in your library at %s." % (what, transport.describe(name)))
 
 
+def _hold_after_rip(job):
+    """Park a season that has been read but can't be named yet.
+
+    The disc is already out. The job waits as `needs_input` with its episodes on the
+    card (or in the share's incoming folder), which `db.drive_busy` does not count as
+    holding the drive -- so the next disc rips straight away. An answer, or the missing
+    earlier disc finishing, sends it on to the library (`_release_held`).
+    """
+    plan = job["_plan"]
+    hold = plan["hold"]
+    db.stage_end(job["id"])
+    db.update_job(job["id"], state="needs_input", question=hold["question"],
+                  phase="Ripped — waiting to be named", eta_seconds=None,
+                  episode_plan=plan)
+    log.info("Job %d ripped and held: %s", job["id"], hold["question"])
+    if not _settle_held(job["id"]):
+        notify.send("needs_you", title=plan.get("series") or job.get("title") or "A disc",
+                    body=hold["question"])
+
+
+def _release_held(job_id, plan):
+    """Send a held season on to the library under the plan it now has."""
+    plan.pop("hold", None)
+    db.update_job(job_id, state="transferring", question=None, episode_plan=plan,
+                  phase="Waiting to send to your library", bytes_sent=0,
+                  bytes_verified=0, error=None)
+    _send_wake.set()
+
+
+def _settle_held(job_id=None):
+    """Name any held season whose start the library can now vouch for. Returns True if
+    `job_id` (or, with None, any job) was released.
+
+    The case this exists for is disc 3 going in before disc 2. Disc 3 is read and held,
+    because where its episodes start is a guess; when disc 2 finishes, where disc 3
+    starts is a fact, and the held job is renumbered from it and sent with nobody asked.
+    Run after every finished season and whenever a season is held -- the disc it was
+    waiting for may already be in the library by then.
+    """
+    released = False
+    for job in db.list_jobs(states=["needs_input"], limit=50):
+        if job_id is not None and job["id"] != job_id:
+            continue
+        plan = db.episode_plan(job)
+        hold = plan.get("hold") or {}
+        if hold.get("reason") != "guessed" or not job.get("local_path"):
+            continue
+        rows = [r for r in plan.get("episodes") or [] if r.get("include", True)]
+        count = sum(int(r.get("span") or 1) for r in rows)
+        first, sure = db.season_start(plan.get("series_id"), plan.get("season"),
+                                      series_name=plan.get("series"),
+                                      disc=plan.get("disc"), count=count)
+        if not sure or first is None:
+            continue
+        plan, message = _apply_season_answer(job, plan, None, first, None, None, None,
+                                             None)
+        if message:
+            continue
+        plan["warnings"] = [w for w in plan.get("warnings") or []
+                            if not w.startswith("This is disc ")]
+        log.info("Job %d: disc %s now starts at E%02d, from the discs around it; "
+                 "filing it.", job["id"], plan.get("disc"), first)
+        _release_held(job["id"], plan)
+        released = True
+    return released
+
+
 def _finish_season(job, s, transport, folder, base, sent_from_card=False):
     now = int(time.time())
     plan = job["_plan"]
@@ -2522,7 +2649,7 @@ def _finish_season(job, s, transport, folder, base, sent_from_card=False):
                        disc_family=job.get("disc_family"),
                        series_id=plan.get("series_id"), season=plan.get("season"),
                        series_name=plan.get("series"),
-                       first_episode=rows[0]["episode"] if rows else None,
+                       first_episode=db.row_span(rows[0])[0] if rows else None,
                        job_id=job["id"])
     if not s.get("keep_local_copy", True):
         _cleanup_staging(job)
@@ -2540,6 +2667,10 @@ def _finish_season(job, s, transport, folder, base, sent_from_card=False):
         span = (" (%s)" % episode_label(first) if len(rows) == 1
                 else " (%s to %s)" % (episode_label(first), episode_label(last)))
     log.info("Job %d finished: %d episodes into %s", job["id"], len(rows), folder)
+    try:
+        _settle_held()
+    except Exception as e:                  # never let a neighbour fail this job
+        log.warning("Couldn't re-check held seasons: %s", e)
     notify.send("done", title=plan.get("series") or job.get("title") or "A disc",
                 body="%d episode%s%s ripped and verified%s. They're in your library at %s."
                      % (len(rows), "" if len(rows) == 1 else "s",
@@ -3492,6 +3623,9 @@ def _run_job(job):
             base = _rip_season(job, s, cancel_ev)
             LED.announce("done")
             P.eject()
+            if job["_plan"].get("hold"):
+                _hold_after_rip(job)
+                return
             transport, folder, base = _transfer_season(job, s, base, cancel_ev)
             _finish_season(job, s, transport, folder, base)
             return

@@ -80,6 +80,31 @@ def run(job):
     return db.get_job(job["id"])
 
 
+def run_all(job):
+    """As `run`, but the way the worker does it: a season held for its naming stops
+    after the rip, with the disc out, instead of going on to the library."""
+    os.environ["RIPARR_MOCK_LABEL"] = job.get("disc_label") or ""
+    s = rip._settings()
+    job = rip._identify(job, s)
+    if job is None:
+        return None
+    base = rip._rip_season(job, s, threading.Event())
+    if job["_plan"].get("hold"):
+        rip._hold_after_rip(job)
+        return db.get_job(job["id"])
+    transport, folder, base = rip._transfer_season(job, s, base, threading.Event())
+    rip._finish_season(job, s, transport, folder, base)
+    return db.get_job(job["id"])
+
+
+def send(job_id):
+    """What the sender thread does with a released job."""
+    j = db.get_job(job_id)
+    check("released to the sender", j["state"], "transferring")
+    rip._send_one(j)
+    return db.get_job(job_id)
+
+
 def new_job(label):
     """A queued job for a disc with this volume label, in the tray.
 
@@ -134,29 +159,83 @@ check("twelve files in the library now", len(share_files()), 12)
 
 # ── "unsure": stop once per season, not once per disc ────────────────────────
 
-print("the default stops on the first disc of a season and not the rest")
-# Reading the order off the disc is high confidence about the *sequence*. It says
-# nothing about whether the numbering lines up with a broadcast-order episode guide,
-# which is a different claim and the one that is wrong on Firefly. It cannot be
-# detected, so it is shown -- once, on the disc where one control fixes all of them.
+print("the default does not stop on a disc it can read and name")
+# The order comes off the disc, and with no episode names on the files there is no
+# broadcast-order question to ask. The first disc used to stop here regardless, which
+# parked every unattended box set on its first disc.
 fresh_share()
 db.set("on_season_disc", "unsure")
-d1 = new_job("SOME_SHOW_S05_D01")
-check("first disc asks even though the order is certain",
-      rip._identify(d1, rip._settings()), None)
-d1 = db.get_job(d1["id"])
-check("...and it is the confident kind of question",
-      db.episode_plan(d1)["confidence"], "high")
-rip.answer(d1["id"], season=5, first_episode=1)
-d1 = db.get_job(d1["id"])
-d1["_device"], d1["_plan"] = "/dev/sr0", db.episode_plan(d1)
-b = rip._rip_season(d1, rip._settings(), threading.Event())
-tr, fo, b = rip._transfer_season(d1, rip._settings(), b, threading.Event())
-rip._finish_season(d1, rip._settings(), tr, fo, b)
+d1 = run_all(new_job("SOME_SHOW_S05_D01"))
+check("first disc rips straight through", d1["state"], "done")
+d2 = run_all(new_job("SOME_SHOW_S05_D02"))
+check("and so does the second", d2["state"], "done")
+check("carrying on from seven", db.episode_plan(d2)["episodes"][0]["episode"], 7)
 
-d2 = run(new_job("SOME_SHOW_S05_D02"))
-check("the second disc does not ask", d2 is not None and d2["state"], "done")
-check("and carries on from seven", db.episode_plan(d2)["episodes"][0]["episode"], 7)
+# Names on, through stand-ins for TVmaze. What settles broadcast order is TVmaze's
+# DVD-release list: none (an empty answer) means disc order is aired order.
+_real = (rip.tv.search_series, rip.tv.episodes, rip.tv.dvd_order)
+rip.tv.search_series = lambda name, limit=6: [{"id": 77, "name": "Named Show",
+                                               "year": "2004", "score": 1.0}]
+rip.tv.episodes = lambda sid, include_specials=True: [
+    {"season": 1, "number": n, "name": "Episode %d" % n, "runtime": 42, "special": False}
+    for n in range(1, 13)]
+db.set("tv_metadata", True)
+
+print("a show TVmaze says has no other order rips without asking")
+fresh_share()
+rip.tv.dvd_order = lambda sid: {}
+n1 = run_all(new_job("NAMED_SHOW_S01_D01"))
+check("done, nobody asked", n1["state"], "done")
+check("named from TVmaze", share_files()[0],
+      "nas/Media/TV/Named Show (2004)/Season 01/Named Show - S01E01 - Episode 1.mkv")
+
+print("when TVmaze can't be asked, it rips anyway and holds only the naming")
+fresh_share()
+rip.tv.dvd_order = lambda sid: None
+db.conn().execute("DELETE FROM jobs WHERE title='Named Show'")
+db.conn().execute("DELETE FROM discs")   # a fresh copy of the set, never seen before
+db.conn().commit()
+h = run_all(new_job("NAMED_SHOW_S01_D01"))
+check("read, and waiting to be named", (h["state"], bool(h["local_path"])),
+      ("needs_input", True))
+contains("saying so", h["question"], "Ripped and ejected")
+check("which does not hold the drive", (db.drive_busy() or {}).get("id") != h["id"], True)
+check("nothing in the library yet", share_files(), [])
+ok, msg = rip.answer(h["id"])
+check("an empty answer accepts it", ok, True)
+h = send(h["id"])
+check("and it is filed", (h["state"], len(share_files())), ("done", 6))
+
+print("a show released in production order is named from the DVD list")
+# Firefly's shape: DVD position 1 is the episode the guides call E11.
+fresh_share()
+db.conn().execute("DELETE FROM jobs WHERE title='Named Show'")
+db.conn().execute("DELETE FROM discs")   # a fresh copy of the set, never seen before
+db.conn().commit()
+order = [11, 1, 2, 6, 7, 3, 4, 5, 8, 9, 10, 12]
+rip.tv.dvd_order = lambda sid: {(1, i + 1): {"season": 1, "number": a,
+                                             "name": "Episode %d" % a}
+                                for i, a in enumerate(order)}
+f1 = run_all(new_job("NAMED_SHOW_S01_D01"))
+check("rips without asking", f1["state"], "done")
+fp = db.episode_plan(f1)
+check("positions are disc order", [e["position"] for e in fp["episodes"]],
+      [1, 2, 3, 4, 5, 6])
+check("file numbers are the broadcast ones", [e["episode"] for e in fp["episodes"]],
+      [11, 1, 2, 6, 7, 3])
+contains("and the user is told", fp["warnings"][0], "TVmaze's DVD order")
+check("the first file is S01E11 with its own name",
+      "nas/Media/TV/Named Show (2004)/Season 01/Named Show - S01E11 - Episode 11.mkv"
+      in share_files(), True)
+f2 = run_all(new_job("NAMED_SHOW_S01_D02"))
+check("disc two carries on in disc order: positions 7-12",
+      [e["position"] for e in db.episode_plan(f2)["episodes"]][::5], [7, 12])
+check("named 4, 5, 8, 9, 10, 12",
+      [e["episode"] for e in db.episode_plan(f2)["episodes"]], [4, 5, 8, 9, 10, 12])
+check("twelve distinct files", len(set(share_files())), 12)
+
+rip.tv.search_series, rip.tv.episodes, rip.tv.dvd_order = _real
+db.set("tv_metadata", False)
 db.set("on_season_disc", "auto")
 
 # ── discs put in out of order ───────────────────────────────────────────────
@@ -178,27 +257,30 @@ db.set("on_season_disc", "auto")
 o1 = run(new_job("OUT_OF_ORDER_S01_D01"))
 check("disc one is 1-6", [db.episode_plan(o1)["episodes"][i]["episode"] for i in (0, -1)],
       [1, 6])
-o3 = new_job("OUT_OF_ORDER_S01_D03")
-check("disc three, with disc two missing, stops even under auto",
-      rip._identify(o3, rip._settings()), None)
-p3 = db.episode_plan(db.get_job(o3["id"]))
+o3 = run_all(new_job("OUT_OF_ORDER_S01_D03"))
+check("disc three, with disc two missing, is read and held, even under auto",
+      (o3["state"], bool(o3["local_path"])), ("needs_input", True))
+p3 = db.episode_plan(o3)
 check("proposing 13 from the size of disc one", p3["episodes"][0]["episode"], 13)
 contains("and saying it is a guess", p3["warnings"][0], "can't know where")
-rip.answer(o3["id"], season=1, first_episode=13)
-o3 = finish(o3["id"])
-check("disc three landed", o3["state"], "done")
-o2 = run(new_job("OUT_OF_ORDER_S01_D02"))
-check("disc two does not ask -- disc one says where it starts",
-      o2 is not None and o2["state"], "done")
+check("without holding the drive for disc two",
+      (db.drive_busy() or {}).get("id") != o3["id"], True)
+o2 = run_all(new_job("OUT_OF_ORDER_S01_D02"))
+check("disc two does not ask -- disc one says where it starts", o2["state"], "done")
 check("and it is 7-12, not 19-24",
       [db.episode_plan(o2)["episodes"][i]["episode"] for i in (0, -1)], [7, 12])
+o3 = send(o3["id"])
+check("disc three then files itself, nobody asked", o3["state"], "done")
+check("as 13-18", [db.episode_plan(o3)["episodes"][i]["episode"] for i in (0, -1)],
+      [13, 18])
+check("eighteen files", len(share_files()), 18)
 
 print("disc 2 after disc 3 alone counts back from disc 3")
 fresh_share()
-b3 = new_job("COUNT_BACK_S02_D03")
-rip._identify(b3, rip._settings())
-rip.answer(b3["id"], season=2, first_episode=13)
-finish(b3["id"])
+b3 = run_all(new_job("COUNT_BACK_S02_D03"))
+ok, _ = rip.answer(b3["id"], season=2, first_episode=13)
+check("a human can settle a held disc's numbering", ok, True)
+send(b3["id"])
 b2 = run(new_job("COUNT_BACK_S02_D02"))
 check("ends right before disc three", db.episode_plan(b2)["episodes"][-1]["episode"], 12)
 check("so starts at 7", db.episode_plan(b2)["episodes"][0]["episode"], 7)
@@ -246,15 +328,13 @@ os.environ["RIPARR_MOCK_CONTENT"] = "tv"
 
 # ── the question, and the answer ─────────────────────────────────────────────
 
-print("an unlabelled season disc stops and asks")
+print("an unlabelled season disc is ripped, then asks for its season")
 fresh_share()
 db.set("on_season_disc", "unsure")
-ask_job = new_job("DISC_1")            # no season anywhere
-s = rip._settings()
-check("parked, not ripped", rip._identify(ask_job, s), None)
-ask_job = db.get_job(ask_job["id"])
-check("waiting for a human", ask_job["state"], "needs_input")
-contains("and says why", ask_job["question"], "nothing says which season")
+ask_job = run_all(new_job("DISC_1"))   # no season anywhere
+check("read, ejected, and waiting for a human",
+      (ask_job["state"], bool(ask_job["local_path"])), ("needs_input", True))
+contains("and says why", ask_job["question"], "nothing on the disc says which season")
 proposed = db.episode_plan(ask_job)
 check("with a plan already drawn up", len(proposed["episodes"]), 6)
 check("no season on it yet", proposed["season"], None)
@@ -263,7 +343,7 @@ print("the answer is applied, and remembered")
 ok, msg = rip.answer(ask_job["id"], season=3, first_episode=4, name="Twin Peaks")
 check("accepted", ok, True)
 answered = db.get_job(ask_job["id"])
-check("back in the queue", answered["state"], "queued")
+check("straight to the sender, not back to the drive", answered["state"], "transferring")
 apl = db.episode_plan(answered)
 check("season set", apl["season"], 3)
 check("numbering starts where asked",
@@ -272,15 +352,24 @@ disc = db.get_disc("fp-DISC_1")
 check("and the disc remembers it, so it never asks twice",
       (disc["season"], disc["first_episode"]), (3, 4))
 
-answered["_device"] = "/dev/sr0"
-answered["_plan"] = apl
-base = rip._rip_season(answered, rip._settings(), threading.Event())
-tr, folder, base = rip._transfer_season(answered, rip._settings(), base,
-                                        threading.Event())
-rip._finish_season(answered, rip._settings(), tr, folder, base)
+send(answered["id"])
 check("filed under the season the human gave it", share_files(),
       ["nas/Media/TV/Twin Peaks/Season 03/Twin Peaks - S03E%02d.mkv" % n
        for n in range(4, 10)])
+
+print("a folder name typed over a matched series is used")
+fresh_share()
+db.set("on_season_disc", "ask")
+rj = new_job("RENAMED_S01_D01")
+rip._identify(rj, rip._settings())
+rplan = db.episode_plan(db.get_job(rj["id"]))
+rip.answer(rj["id"], name=rplan["series"])
+check("an untouched box changes nothing", db.episode_plan(db.get_job(rj["id"]))["series"],
+      rplan["series"])
+db.update_job(rj["id"], state="needs_input")
+rip.answer(rj["id"], name="Renamed By Hand")
+check("an edited one is the folder", db.get_job(rj["id"])["title"], "Renamed By Hand")
+db.set("on_season_disc", "unsure")
 
 print("unticking an episode renumbers the rest")
 fresh_share()
