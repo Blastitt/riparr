@@ -2409,6 +2409,12 @@ def _transfer_season(job, s, base, cancel_ev):
         log.info("Job %d: %s is in the library (%s)", job["id"],
                  episode_label(row), name)
 
+    if direct:
+        # Every episode has been renamed out of .riparr-incoming/job-N, which leaves
+        # its empty ep-NN folders sitting in the library share. The card copy is a
+        # different place and is kept or not by keep_local_copy, as for a film.
+        shutil.rmtree(os.path.join(root, ".riparr-incoming", "job-%d" % job["id"]),
+                      ignore_errors=True)
     return transport, _season_folder(job, s, plan, rows), base
 
 
@@ -2522,11 +2528,9 @@ def _finish_season(job, s, transport, folder, base, sent_from_card=False):
                   eta_seconds=None, error=None, episode_plan=plan,
                   dest_path=transport.describe(folder))
     LED.announce("done")
-    # A resumed season was sent from the card long after the disc came out, and very
-    # likely with the next disc of the box set already loaded -- which an eject that
-    # thinks it is being helpful would spit onto the tray mid-rip.
-    if not sent_from_card:
-        P.eject()
+    # No eject here. The disc came out the moment the last episode was read, and by now
+    # the next disc of the box set may well be in -- a cache-mode transfer takes long
+    # enough to swap -- so an eject that thinks it is being helpful would spit it out.
     span = ""
     if rows:
         first, last = rows[0], rows[-1]
