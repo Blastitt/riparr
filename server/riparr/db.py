@@ -122,6 +122,16 @@ ADDED_COLUMNS = {
         # (`sent`), which is what verification and the purge check against -- the album
         # folder on the share may also hold the other discs of the set.
         ("album", "TEXT"),
+        # ── what Auto Rip does with each kind of disc ──
+        # 1 when somebody pressed Rip rather than Auto Rip noticing a disc. "Leave it
+        # alone" is an Auto Rip setting: a person asking for a rip has overridden it.
+        ("manual", "INTEGER DEFAULT 0"),
+        # 1 once a "Show me first" question has been answered, so the answered job does
+        # not stop to show itself again when it goes back through identify.
+        ("confirmed", "INTEGER DEFAULT 0"),
+        # JSON list of a film's extras to rip beside it ({index, seconds, bytes, name}),
+        # and as they are read, where each landed. Empty unless `movie_extras` is "all".
+        ("extras", "TEXT"),
     ],
     "discs": [
         ("title_index", "INTEGER"),    # the remembered title choice (R5: fix once, ever)
@@ -149,6 +159,20 @@ ADDED_COLUMNS = {
 DEFAULTS = {
     "setup_complete": False,
     "auto_rip": False,
+    # What Auto Rip does with each kind of disc once it knows what it is: "rip" it,
+    # "show" the plan first, or "ignore" it (eject). Pressing Rip always rips. Data is
+    # anything that is none of the others -- a game disc, a disc of files.
+    "auto_movie": "rip",
+    "auto_tv": "rip",
+    "auto_music": "rip",
+    "auto_data": "rip",
+    # A film's or a season's extras: "none" or "all". Into the Featurettes folder.
+    "movie_extras": "none",
+    "tv_extras": "none",
+    # A data disc is saved as one ISO image -- byte for byte, boot sector and all.
+    "data_share_id": None,
+    "data_folder": "Data",
+    "data_template": "{Title}.iso",
     "theme": "servarr",
     "movie_template": "{Title} ({Year})/{Title} ({Year}).mkv",
     "tv_template": "{Title} ({Year})/Season {Season:00}/"
@@ -429,6 +453,15 @@ def init():
         for name, decl in cols:
             if name not in have:
                 c.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, decl))
+    # "Always show me the season plan" became Auto Rip's per-kind "Show me first" for
+    # TV. Carried across once, so nobody who chose to see every plan stops seeing it.
+    stored = {r["key"]: json.loads(r["value"]) for r in c.execute(
+        "SELECT key, value FROM settings WHERE key IN ('on_season_disc','auto_tv')")}
+    if stored.get("on_season_disc") == "ask" and "auto_tv" not in stored:
+        c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
+                  ("auto_tv", json.dumps("show")))
+        c.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)",
+                  ("on_season_disc", json.dumps("unsure")))
     c.commit()
 
 
@@ -576,6 +609,7 @@ KINDS = {
     "movie": ("movie_share_id", "movie_folder", "Movies"),
     "tv":    ("tv_share_id",    "tv_folder",    "TV"),
     "music": ("music_share_id", "music_folder", "Music"),
+    "data":  ("data_share_id",  "data_folder",  "Data"),
 }
 
 
@@ -726,7 +760,7 @@ INTERRUPTIBLE = ["identifying", "ripping", "transferring", "verifying"]
 # Columns held as JSON text. Encoding them in one place rather than at each call site
 # is what stopped `episode_plan` from being written as a Python repr the first time a
 # caller forgot -- which SQLite accepts happily and json.loads does not.
-_JSON_COLUMNS = ("titles", "episode_plan", "album")
+_JSON_COLUMNS = ("titles", "episode_plan", "album", "extras")
 
 
 def _encode_json(fields):

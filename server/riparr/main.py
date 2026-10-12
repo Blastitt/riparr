@@ -1307,7 +1307,7 @@ def rip_now(body: RipRequest = RipRequest(), user=Depends(require_user)):
     disc it can see and offers no way to act on it is the worst kind of broken,
     because everything on it looks like it is working.
     """
-    job_id, why = RIP.enqueue(force=body.force)
+    job_id, why = RIP.enqueue(force=body.force, manual=True)
     if not job_id:
         raise HTTPException(status_code=400, detail=why)
     return {"ok": True, "job_id": job_id}
@@ -1451,7 +1451,7 @@ def _start_rerip(fingerprint, what=None):
                 status_code=400,
                 detail="Put %s in the tray and press Re-rip again. (%s)"
                        % (what or "the disc", message))
-    job_id, why = RIP.enqueue(force=True, expect=fingerprint)
+    job_id, why = RIP.enqueue(force=True, expect=fingerprint, manual=True)
     if not job_id:
         # The watcher beat us to it. That is a success wearing an error's clothes:
         # the disc it picked up is the one that was armed, so it is already being

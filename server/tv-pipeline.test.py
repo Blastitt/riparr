@@ -289,7 +289,7 @@ check("so starts at 7", db.episode_plan(b2)["episodes"][0]["episode"], 7)
 
 print("a ticked extra lands in Featurettes, beside the seasons")
 fresh_share()
-db.set("on_season_disc", "ask")
+db.set("auto_tv", "show")
 xj = new_job("EXTRAS_SHOW_S01_D01")
 rip._identify(xj, rip._settings())
 xplan = db.episode_plan(db.get_job(xj["id"]))
@@ -317,6 +317,7 @@ check("a second disc's extra with the same name sits beside the first, not over 
        "nas/Media/TV/Extras Show/Featurettes/Behind the Scenes.mkv"])
 check("and it did not move the next disc's numbering",
       db.next_episode(None, 1, series_name="Extras Show"), 13)
+db.set("auto_tv", "rip")
 db.set("on_season_disc", "auto")
 
 # ── the film path is unchanged ───────────────────────────────────────────────
@@ -369,7 +370,7 @@ check("filed under the season the human gave it", share_files(),
 
 print("a folder name typed over a matched series is used")
 fresh_share()
-db.set("on_season_disc", "ask")
+db.set("auto_tv", "show")
 rj = new_job("RENAMED_S01_D01")
 rip._identify(rj, rip._settings())
 rplan = db.episode_plan(db.get_job(rj["id"]))
@@ -379,6 +380,7 @@ check("an untouched box changes nothing", db.episode_plan(db.get_job(rj["id"]))[
 db.update_job(rj["id"], state="needs_input")
 rip.answer(rj["id"], name="Renamed By Hand")
 check("an edited one is the folder", db.get_job(rj["id"])["title"], "Renamed By Hand")
+db.set("auto_tv", "rip")
 db.set("on_season_disc", "unsure")
 
 print("unticking an episode renumbers the rest")

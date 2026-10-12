@@ -186,7 +186,7 @@ def _autorip_ready(drives=None):
 
 # ─────────────────────────────── queueing ───────────────────────────────
 
-def enqueue(force=False, expect=None):
+def enqueue(force=False, expect=None, manual=False):
     """Queue the disc currently in the tray. Returns (job_id, reason_if_not).
 
     `force` is the "Re-rip" path: it skips the duplicate check, which is the only
@@ -207,7 +207,7 @@ def enqueue(force=False, expect=None):
     # A CD is a different pipeline from here on, and nothing below this line applies to
     # it: it has no MakeMKV scan, no title structure and usually no volume label.
     if disc_family(d) == "cd":
-        return _enqueue_cd(d, force=force, expect=expect)
+        return _enqueue_cd(d, force=force, expect=expect, manual=manual)
     from . import makemkv as MK
     if MK.installing():
         return None, ("MakeMKV is being installed. The disc can go in again once "
@@ -267,6 +267,7 @@ def enqueue(force=False, expect=None):
     # interface already renders ("Reading the disc"), so this costs no new UI.
     job_id = db.create_job(
         title=None, disc_label=label, kind="movie", fingerprint="",
+        manual=1 if manual else 0,
         state="identifying", phase=_reading_phase(disc_family(d)),
         mode=None, bytes_total=int(d.get("size_bytes") or 0))
 
@@ -455,7 +456,8 @@ def answer(job_id, title_index=None, name=None, skip=False, season=None,
         P.eject()
         return True, "Skipped, and the disc has been ejected."
 
-    fields = {"state": "queued", "question": None, "phase": "Waiting to start"}
+    fields = {"state": "queued", "question": None, "phase": "Waiting to start",
+              "confirmed": 1}
     if name:
         fields["title"] = name
     if title_index is not None:
@@ -704,11 +706,18 @@ def fingerprint(drive, on_progress=None):
     MakeMKV has to read the disc header anyway.
     """
     parts = [drive.get("label") or "", drive.get("media") or ""]
+    titled = False
     try:
         for t in read_titles(drive.get("device"), drive, on_progress=on_progress):
             parts.append("%d:%d" % (t["index"], t["seconds"]))
+            titled = True
     except Exception:
         pass
+    if not titled:
+        # A data disc has no titles, so label and media were all there was -- and every
+        # game disc labelled CDROM was then the same disc, refused as a duplicate of the
+        # first. Its size separates them. Only here, so no film's identity changes.
+        parts.append("bytes:%d" % int(drive.get("size_bytes") or 0))
     import hashlib
     return hashlib.sha1("|".join(parts).encode("utf-8", "replace")).hexdigest()
 
@@ -767,6 +776,9 @@ def _mock_titles():
     disc = (os.environ.get("RIPARR_MOCK_CONTENT") or "movie").strip().lower()
     gb = float(os.environ.get("RIPARR_MOCK_DISC_GB", "7.8"))
 
+    if disc == "data":
+        return []                   # a game disc or a disc of files: nothing to play
+
     if disc.startswith("tv"):
         if disc == "tv-blob":
             # Every episode welded into one title. Nothing on this box can split it, so
@@ -803,6 +815,42 @@ def _mock_titles():
         _mt(1, 132, 0.39, name="Trailer", source="00002.mpls", segments="20"),
         _mt(2, 61, 0.09, name="Menu loop", source="00003.mpls", segments="21"),
     ]
+
+
+FILM_EXTRAS_MAX = 25
+
+
+def film_extras(titles, main, min_seconds=120):
+    """The titles on a film disc worth ripping as its extras, longest first.
+
+    Everything that is not the film, minus everything that is the film again. That
+    second half is the hard part, and it is where discs fight back: copy-protected
+    releases carry dozens of decoy playlists the length of the film, and every disc
+    has the film's own segments re-cut as alternate versions, a play-all of the
+    featurettes, or the same featurette under two playlists. So a title is dropped if
+    it runs half the film's length or more (another cut, or a decoy), if it shares a
+    segment with the film, or if it holds two or more of the other candidates (a
+    play-all of them); what survives is de-duplicated the way episodes are. Capped,
+    because a disc that still offers fifty of them after all that is lying.
+    """
+    if not main:
+        return []
+    film = set(tv.parse_segments(main.get("segments")))
+    floor = max(int(min_seconds or 0), 120)
+    pool = []
+    for t in titles:
+        if t["index"] == main["index"] or t.get("seconds", 0) < floor:
+            continue
+        if t["seconds"] >= 0.5 * (main.get("seconds") or 0):
+            continue
+        if film and set(tv.parse_segments(t.get("segments"))) & film:
+            continue
+        pool.append(t)
+    pool = [t for t in pool if len(tv._held(t, pool)) < 2]
+    keep = sorted(tv._dedup(pool), key=lambda t: -t["seconds"])[:FILM_EXTRAS_MAX]
+    return [{"index": t["index"], "seconds": t["seconds"], "bytes": t.get("bytes") or 0,
+             "name": t.get("name") or "Extra %d" % n}
+            for n, t in enumerate(sorted(keep, key=lambda t: t["index"]), 1)]
 
 
 def _mt(index, seconds, gb, name="", source="", segments="", chapters=1):
@@ -1563,6 +1611,9 @@ def _identify_season(job, s, d, titles, remembered):
                        "name": ("Season %d Extra %d" % (season, n) if season is not None
                                 else "Extra %d" % n), "state": "pending"}
                       for n, t in enumerate(found["extras"], 1)]
+    if s.get("tv_extras") == "all":
+        for x in plan["extras"]:
+            x["include"] = True
     for row in plan["episodes"]:
         row["state"] = "pending"
         row["include"] = True
@@ -1586,6 +1637,15 @@ def _identify_season(job, s, d, titles, remembered):
     # where one control fixes every disc after it. Which is what the guide has been
     # promising about season discs since before any of this was built.
     behaviour = s.get("on_season_disc", "unsure")
+    choice = _kind_choice(job, s, "tv")
+    if choice == "ignore":
+        return True, _leave_alone(job, "tv")
+    if choice == "show":
+        behaviour = "ask"
+    elif behaviour == "ask":
+        # The old "always show me" now lives in auto_tv (db.init carries it across);
+        # anything still saying it here means only "when unsure".
+        behaviour = "unsure"
     # A guessed starting number always asks, like a missing season does: under "auto"
     # it would file a third of a season under the wrong numbers, with confidence.
     ask = (season is None
@@ -1686,6 +1746,41 @@ def _reading_phase(family):
     return "Reading the disc"
 
 
+# ── what Auto Rip does with each kind of disc ──
+
+KIND_WORDS = {"movie": "films", "tv": "TV seasons", "music": "music CDs",
+              "data": "data discs"}
+
+
+def _kind_choice(job, s, kind):
+    """"rip", "show" or "ignore" for this kind of disc -- the per-kind Auto Rip row.
+
+    "Leave it alone" is a statement about what Auto Rip should pick up. Somebody who
+    pressed Rip has asked for this disc in particular, so for them it is "rip"; and a
+    question already answered is not asked again.
+    """
+    choice = s.get("auto_%s" % kind) or "rip"
+    if choice not in ("rip", "show", "ignore"):
+        choice = "rip"
+    if choice == "ignore" and job.get("manual"):
+        return "rip"
+    if choice == "show" and job.get("confirmed"):
+        return "rip"
+    return choice
+
+
+def _leave_alone(job, kind):
+    """Eject a disc whose kind Auto Rip is set to ignore, and say so in History."""
+    msg = ("Left alone: Auto Rip is set to ignore %s. Press Rip to rip this one anyway."
+           % KIND_WORDS.get(kind, "this kind of disc"))
+    db.stage_end(job["id"])
+    db.update_job(job["id"], state="cancelled", phase=None, kind=kind,
+                  finished_at=int(time.time()), error=msg)
+    log.info("Job %d: %s", job["id"], msg)
+    P.eject()
+    return None
+
+
 def _identify(job, s):
     db.update_job(job["id"], state="identifying",
                   phase=_reading_phase(job.get("disc_family")),
@@ -1735,8 +1830,9 @@ def _identify(job, s):
             job = db.get_job(job["id"])
             return _identify_music(job, s, d)
     if not titles:
-        raise RipFailed("Riparr couldn't read any titles from this disc. "
-                        "If it's dirty or scratched, clean it and try again.")
+        # Not a film, not a season, not music: a game disc, a disc of files. Saved
+        # whole as an ISO image rather than refused.
+        return _identify_data(job, s, d)
 
     remembered = db.get_disc(job.get("fingerprint") or "") or {}
     chosen_index = job.get("chosen_title")
@@ -1768,10 +1864,14 @@ def _identify(job, s):
     # conflating them meant that answering the naming question with "use the label"
     # also silently answered the title question -- with longest-wins, which on a 3D
     # disc is the wrong cut.
+    choice = _kind_choice(job, s, "movie")
+    if choice == "ignore":
+        return _leave_alone(job, "movie")
     ask_name = not name
     ask_title = (chosen_index is None
                  and looks_obfuscated(titles, s["min_title_seconds"])
                  and s.get("on_ambiguous_title", "auto") == "ask")
+    show = choice == "show"
 
     if ask_name:
         behaviour = s.get("on_unknown_disc", "label")
@@ -1786,8 +1886,10 @@ def _identify(job, s):
             name = pretty_label(d.get("label")) or d.get("label")
             ask_name = False
 
-    if ask_name or ask_title:
-        question = _identify_question(ask_name, titles, s["min_title_seconds"])
+    if ask_name or ask_title or show:
+        question = (_identify_question(ask_name, titles, s["min_title_seconds"])
+                    if ask_name or ask_title else
+                    "Here's what Riparr found. Check the name and the title, then rip it.")
         db.stage_end(job["id"])
         db.update_job(job["id"], state="needs_input", question=question,
                       phase="Waiting for you",
@@ -1806,9 +1908,11 @@ def _identify(job, s):
     if warning:
         log.warning("Job %d: %s", job["id"], warning)
     warning = " ".join(w for w in (fallback, warning) if w) or None
+    extras = (film_extras(titles, chosen, s["min_title_seconds"])
+              if s.get("movie_extras") == "all" else [])
     db.stage_end(job["id"])
     db.update_job(job["id"], title=title_name, chosen_title=chosen["index"], output=MKV,
-                  year=year,
+                  year=year, extras=extras,
                   titles=titles, bytes_total=chosen.get("bytes") or 0,
                   warning=warning, disc_family=disc_family(d),
                   # The whole disc, not the title. `bytes_total` is the film; this is
@@ -1821,6 +1925,166 @@ def _identify(job, s):
     job["_year"] = year
     job["_device"] = d.get("device")
     return job
+
+
+# ── data discs: anything that is not a film, a season or music ──
+#
+# A Windows XP game, a disc of photos, a driver CD. MakeMKV finds no titles on it and
+# there is no music on it, and before this existed that was an error -- "couldn't read
+# any titles" -- on a disc that reads perfectly well. It is saved as one ISO image:
+# every sector, in order, which is the one form that keeps everything (the boot sector
+# an installer needs, the volume name a game checks for, the file layout) and which
+# every OS can open, burn or hand to an emulator. Copying the files out would lose the
+# first two and needs root to mount the disc.
+
+ISO = "iso"
+SECTOR = 2048
+
+
+def _disc_image_size(d):
+    """Bytes in the disc's data area, from the device itself where possible."""
+    if not P.MOCK:
+        try:
+            fd = os.open(d.get("device") or "/dev/sr0", os.O_RDONLY)
+            try:
+                size = os.lseek(fd, 0, os.SEEK_END)
+            finally:
+                os.close(fd)
+            if size:
+                return size
+        except OSError as e:
+            log.info("Couldn't size %s directly (%s); using the drive's figure.",
+                     d.get("device"), e)
+    return int(d.get("size_bytes") or 0)
+
+
+def _identify_data(job, s, d):
+    choice = _kind_choice(job, s, "data")
+    if choice == "ignore":
+        return _leave_alone(job, "data")
+    label = d.get("label") or job.get("disc_label") or ""
+    remembered = db.get_disc(job.get("fingerprint") or "") or {}
+    name = (job.get("title") or remembered.get("title") or pretty_label(label) or label
+            or "Data disc %s" % time.strftime("%Y-%m-%d"))
+    size = _disc_image_size(d)
+    if not size:
+        raise RipFailed("Riparr couldn't tell how much is on this disc, so it can't be "
+                        "saved. If it's dirty or scratched, clean it and try again.")
+    fields = dict(kind="data", output=ISO, title=name, bytes_total=size,
+                  disc_family=disc_family(d) or d.get("media_kind"),
+                  disc_bytes=size, disc_label=label or None, titles=[])
+    if choice == "show":
+        question = ("This isn't a film, a TV season or music, so Riparr will save the "
+                    "whole disc as an ISO image named “%s.iso”. Change the name "
+                    "if you like, then save it." % sanitise(name))
+        db.stage_end(job["id"])
+        db.update_job(job["id"], state="needs_input", question=question,
+                      phase="Waiting for you", **fields)
+        notify.send("needs_you", title=name, body=question)
+        return None
+    db.stage_end(job["id"])
+    db.update_job(job["id"], **fields)
+    log.info("Job %d is a data disc: %s, %d MiB, saved as an ISO image.", job["id"],
+             name, size // 2 ** 20)
+    job = db.get_job(job["id"])
+    job["_device"] = d.get("device")
+    return job
+
+
+def _rip_data(job, s, cancel_ev):
+    """Read the whole disc into one .iso. Returns its path.
+
+    Sectors that will not read are retried, then filled with zeros and counted -- an
+    old game disc with a scratch near the end is still worth keeping, and the count is
+    reported so nobody mistakes a damaged image for a perfect one.
+    """
+    kind = "data"
+    direct = use_direct(s, kind)
+    out_dir = _job_dir(job["id"], direct=direct, kind=kind)
+    path = os.path.join(out_dir, "%s.iso" % sanitise(job.get("title") or "disc"))
+    size = int(job.get("bytes_total") or 0)
+    if job.get("fingerprint"):
+        db.record_disc(job["fingerprint"], label=job.get("disc_label"),
+                       title=job.get("title"), kind=kind, size_bytes=size,
+                       disc_family=job.get("disc_family"))
+    db.update_job(job["id"], state="ripping", phase="Copying the disc",
+                  bytes_ripped=0, stage_pct=0)
+    db.stage_start(job["id"], "save")
+    started, bad = time.time(), [0]
+
+    def report(done):
+        frac = done / float(size) if size else 0
+        elapsed = time.time() - started
+        db.update_job(job["id"], bytes_ripped=done, stage_pct=round(frac, 4),
+                      eta_seconds=int(elapsed / frac - elapsed) if frac > 0.02 else None)
+
+    if P.MOCK:
+        size = min(size, 16 * 2 ** 20)
+        with open(path, "wb") as f:
+            for i in range(16):
+                if cancel_ev.is_set():
+                    raise Cancelled()
+                f.write(bytes([i]) * (size // 16))
+                report(f.tell())
+    else:
+        chunk = 512 * SECTOR
+        last = 0
+        with open(job.get("_device") or "/dev/sr0", "rb", buffering=0) as src, \
+                open(path, "wb") as dst:
+            pos = 0
+            while pos < size:
+                if cancel_ev.is_set():
+                    raise Cancelled()
+                want = min(chunk, size - pos)
+                buf = _read_at(src, pos, want)
+                if buf is None or len(buf) < want:
+                    buf = _read_sectors(src, pos, want, bad)
+                dst.write(buf)
+                pos += len(buf)
+                if time.time() - last > 1:
+                    report(pos)
+                    last = time.time()
+            report(pos)
+    db.stage_end(job["id"])
+    total = os.path.getsize(path)
+    if bad[0] and bad[0] * SECTOR >= total:
+        raise RipFailed("None of this disc could be read. If it's dirty or scratched, "
+                        "clean it and try again.")
+    warning = None
+    if bad[0]:
+        warning = ("%d sector%s couldn't be read and %s filled with zeros, so the image "
+                   "may not work completely." % (bad[0], "" if bad[0] == 1 else "s",
+                                                 "was" if bad[0] == 1 else "were"))
+        log.warning("Job %d: %s", job["id"], warning)
+    db.update_job(job["id"], local_path=path, bytes_ripped=total, bytes_total=total,
+                  warning=warning, eta_seconds=None)
+    log.info("Job %d: disc saved as %s (%d MiB)", job["id"], path, total // 2 ** 20)
+    return path
+
+
+def _read_at(src, pos, n):
+    try:
+        src.seek(pos)
+        return src.read(n)
+    except OSError:
+        return None
+
+
+def _read_sectors(src, pos, n, bad):
+    """Read a span one sector at a time, twice each, zero-filling what will not read."""
+    out = bytearray()
+    for off in range(pos, pos + n, SECTOR):
+        want = min(SECTOR, pos + n - off)
+        got = None
+        for _ in range(2):
+            got = _read_at(src, off, want)
+            if got and len(got) == want:
+                break
+        if not got or len(got) != want:
+            bad[0] += 1
+            got = b"\0" * want
+        out += got
+    return bytes(out)
 
 
 # ── stage 2: get it off the disc ──
@@ -1868,7 +2132,9 @@ def _rip(job, s, cancel_ev):
     db.stage_start(job["id"], "decrypt")
 
     if P.MOCK:
-        return _mock_rip(job, out_dir, cancel_ev)
+        path = _mock_rip(job, out_dir, cancel_ev)
+        _rip_film_extras(job, s, out_dir, cancel_ev)
+        return path
 
     total = job.get("bytes_total") or title.get("bytes") or 0
 
@@ -1883,7 +2149,101 @@ def _rip(job, s, cancel_ev):
     db.stage_end(job["id"])
     db.update_job(job["id"], local_path=path, bytes_ripped=os.path.getsize(path),
                   bytes_total=os.path.getsize(path), eta_seconds=None)
+    _rip_film_extras(job, s, out_dir, cancel_ev)
     return path
+
+
+def film_extras_of(job):
+    raw = job.get("extras")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = None
+    return raw if isinstance(raw, list) else []
+
+
+def _rip_film_extras(job, s, out_dir, cancel_ev):
+    """Read a film's chosen extras into `<job dir>/extras/tNN`, after the film.
+
+    After, not before: the film is what the disc is for, and a run of featurettes that
+    fails or is cancelled must not cost it. An extra that won't read is left out and
+    logged -- it is never a reason to fail a film that ripped.
+    """
+    extras = film_extras_of(job)
+    if not extras:
+        return
+    for n, x in enumerate(extras, 1):
+        if cancel_ev.is_set():
+            raise Cancelled()
+        where = "Extra %d of %d" % (n, len(extras))
+        db.update_job(job["id"], phase=where)
+        x_dir = os.path.join(out_dir, "extras", "t%02d" % int(x["index"]))
+        os.makedirs(x_dir, exist_ok=True)
+        try:
+            if P.MOCK:
+                x["path"] = _mock_rip_episode(job, x_dir, cancel_ev,
+                                              {"title_index": x["index"], "extra": True,
+                                               "name": x["name"]},
+                                              lambda *a: None, lambda: None)
+            else:
+                x["path"] = _run_makemkv(job, s, x["index"], x_dir, cancel_ev,
+                                         x.get("bytes") or 0,
+                                         on_progress=lambda done, eta, phase, _w=where:
+                                         db.update_job(job["id"], phase=_w))
+            x["state"] = "ripped"
+        except RipFailed as e:
+            x["state"], x["error"] = "failed", str(e)
+            log.warning("Job %d: extra %s left out: %s", job["id"], x["name"], e)
+    db.update_job(job["id"], extras=extras)
+    job["extras"] = extras
+
+
+def _file_film_extras(job, s, transport, name, kind="movie"):
+    """Put a film's ripped extras in `<film folder>/Featurettes/`. Never fails the film.
+
+    Only when the film has a folder of its own. With a template that files every film
+    loose in one folder, a Featurettes folder beside them would be everybody's, and Plex
+    would hang one film's extras on all of them.
+    """
+    # From the database, not `job`: the worker's copy was taken before the extras were
+    # read, and in direct mode it is that copy that arrives here. Card mode worked only
+    # because the sender reloads the job -- direct mode filed no extras at all.
+    all_x = film_extras_of(db.get_job(job["id"]) or job)
+    extras = [x for x in all_x
+              if x.get("state") == "ripped" and x.get("path") and os.path.exists(x["path"])]
+    if not extras:
+        return
+    _, folder = db.destination(kind)
+    film_dir = os.path.dirname(name)
+    if not film_dir or film_dir == folder:
+        log.warning("Job %d: extras not filed -- this naming template puts films in "
+                    "one shared folder, so there's no film folder to put them in.",
+                    job["id"])
+        return
+    root = _library_root(kind)
+    for x in extras:
+        rel = _free_extra_name(transport, "%s/%s/%s.mkv" % (
+            film_dir, EXTRAS_FOLDER, sanitise(x.get("name") or "Extra")))
+        try:
+            if use_direct(s, kind) and x["path"].startswith(root):
+                dest = os.path.join(root, rel)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                os.replace(x["path"], dest)
+            else:
+                r = transport.put(x["path"], rel)
+                if not r.get("ok"):
+                    raise OSError(r.get("error"))
+            x["state"], x["remote_name"] = "done", rel
+        except OSError as e:
+            x["state"], x["error"] = "failed", str(e)
+            log.warning("Job %d: couldn't file extra %s: %s", job["id"], x["name"], e)
+        for y in all_x:
+            if y["index"] == x["index"]:
+                y.update(x)
+    db.update_job(job["id"], extras=all_x)
+    log.info("Job %d: %d extra%s filed beside the film", job["id"], len(extras),
+             "" if len(extras) == 1 else "s")
 
 
 def _run_makemkv(job, s, title_index, out_dir, cancel_ev, total_bytes,
@@ -2250,6 +2610,7 @@ def _mock_rip_episode(job, out_dir, cancel_ev, row, progress, first_byte):
 # come from db.destination(); this is only the naming half.
 _TEMPLATES = {
     "movie": ("movie_template", "{Title} ({Year})/{Title} ({Year}).mkv"),
+    "data":  ("data_template", "{Title}.iso"),
     "tv":    ("tv_template",
               "{Title} ({Year})/Season {Season:00}/"
               "{Title} - S{Season:00}E{Episode:00} - {EpisodeTitle}.mkv"),
@@ -2278,6 +2639,8 @@ def _transfer(job, s, local_path, cancel_ev):
     # be the same root `_job_dir` wrote into, or this silently falls through to a full
     # re-upload of a file that is already where it needs to be.
     if use_direct(s, kind) and local_path.startswith(_library_root(kind)):
+        # Extras first: placing the film tidies the job folder they are sitting in.
+        _file_film_extras(job, s, transport, name, kind)
         return _place_directly(job, s, local_path, name, transport, kind)
 
 
@@ -2328,6 +2691,7 @@ def _transfer(job, s, local_path, cancel_ev):
         raise Cancelled()
     if not r.get("ok"):
         raise RipFailed("Couldn't write to your library: %s" % r.get("error"))
+    _file_film_extras(job, s, transport, name, kind)
     db.stage_end(job["id"])
     db.update_job(job["id"], bytes_sent=total, eta_seconds=None)
     # The third value is where the file is *now*. In direct mode the transfer moves it,
@@ -2653,7 +3017,8 @@ def _finish(job, s, transport, name, local_path, sent_from_card=False):
     db.stage_end(job["id"], at=now)
     if job.get("fingerprint"):
         db.record_disc(job["fingerprint"], label=job.get("disc_label"),
-                       title=job.get("title"), kind="movie", ripped_at=now,
+                       title=job.get("title"), kind=job.get("kind") or "movie",
+                       ripped_at=now,
                        size_bytes=job.get("disc_bytes") or 0,
                        disc_family=job.get("disc_family"),
                        title_index=job.get("chosen_title"), job_id=job["id"])
@@ -2675,6 +3040,7 @@ def _finish(job, s, transport, name, local_path, sent_from_card=False):
         P.eject()
     log.info("Job %d finished: %s", job["id"], transport.describe(name))
     what = ("Backed up, menus and all, and verified" if job.get("output") == BACKUP
+            else "Saved as a disc image and verified" if job.get("output") == ISO
             else "Ripped and verified")
     notify.send("done", title=job.get("title") or job.get("disc_label") or "A disc",
                 body="%s. It's in your library at %s." % (what, transport.describe(name)))
@@ -3174,7 +3540,7 @@ def _music_estimate(toc, fmt, s=None):
     return int(pcm * MU.size_ratio(fmt, (s or {}).get("music_quality")))
 
 
-def _enqueue_cd(d, force=False, expect=None):
+def _enqueue_cd(d, force=False, expect=None, manual=False):
     """`enqueue()` for a CD. The table of contents is read in milliseconds and is the
     disc's identity, so there is no slow scan to put a job row in front of, and a
     duplicate is recognised before anything else happens."""
@@ -3216,6 +3582,7 @@ def _enqueue_cd(d, force=False, expect=None):
     fmt = _music_format(s)
     job_id = db.create_job(
         title=None, disc_label=d.get("label") or "", kind="music", fingerprint=fp,
+        manual=1 if manual else 0,
         output=output, state="queued", phase="Waiting to start", mode=None,
         disc_family="cd", disc_bytes=int(d.get("size_bytes") or 0),
         bytes_total=_music_estimate(toc, fmt, s) if toc["audio"]
@@ -3249,8 +3616,9 @@ def _identify_music(job, s, d):
         db.update_job(job["id"], phase="Looking for music on the disc")
         files = MU.data_audio_files(device)
         if not files:
-            raise RipFailed("This is a data disc with no music files on it, so there's "
-                            "nothing for Riparr to rip.")
+            # No music on it after all: it is a data disc, and saved as one.
+            db.update_job(job["id"], output=None, kind="data")
+            return _identify_data(db.get_job(job["id"]), s, d)
         name = (job.get("title") or pretty_label(label) or label
                 or "Data CD %s" % time.strftime("%Y-%m-%d"))
         total = sum(size for _, size in files)
@@ -3308,6 +3676,35 @@ def _identify_music(job, s, d):
                 log.info("Job %d needs a human: %s", job["id"], question)
                 notify.send("needs_you", title="A music CD", body=question)
                 return None
+    choice = _kind_choice(job, s, "music")
+    if choice == "ignore":
+        return _leave_alone(job, "music")
+    proposed = ("%s - %s" % (plan["album_artist"], plan["album"])
+                if not plan.get("unknown") else "")
+    if choice == "show":
+        question = ("Riparr thinks this is %s. Check the match, correct it if it's wrong, "
+                    "then rip it." % proposed if proposed else
+                    "Riparr couldn't match this CD. What's it called?")
+        db.stage_end(job["id"])
+        db.update_job(job["id"], state="needs_input", question=question,
+                      phase="Waiting for you", titles=[], album=plan,
+                      title=proposed or None,
+                      kind="music", output=MU.MUSIC, disc_family="cd",
+                      disc_label=label or None)
+        log.info("Job %d shown first: %s", job["id"], question)
+        notify.send("needs_you", title=proposed or "A music CD", body=question)
+        return None
+    typed = (job.get("title") or "").strip()
+    if job.get("confirmed") and typed and typed != proposed and not plan.get("unknown"):
+        # Shown first and corrected: the person who looked at it knows better. A
+        # corrected artist moves the tracks credited to the old one with it; apply_name
+        # alone only fills blanks, which suits an unknown CD and not a wrong match.
+        was = plan.get("album_artist")
+        MU.apply_name(plan, typed)
+        if plan.get("album_artist") != was:
+            for row in plan.get("tracks") or []:
+                if row.get("artist") == was:
+                    row["artist"] = plan["album_artist"]
     title = ("%s — %s" % (plan["album_artist"], plan["album"])
              if not plan.get("unknown") else plan["album"])
     year = str(plan.get("year") or "")
@@ -3812,7 +4209,8 @@ def _run_job(job):
             return
 
         backup = job.get("output") == BACKUP
-        local_path = (_rip_backup if backup else _rip)(job, s, cancel_ev)
+        local_path = (_rip_data if job.get("output") == ISO
+                      else _rip_backup if backup else _rip)(job, s, cancel_ev)
 
         # The disc has been read. In cache mode everything left to do happens from the
         # card, so the tray opens *now* rather than twenty minutes from now -- the user
@@ -3821,7 +4219,7 @@ def _run_job(job):
         #
         # Direct mode gets no such moment: the film is being written to the library as
         # it is read, so there is nothing to hand off and `_finish` ejects as before.
-        if not use_direct(s):
+        if not use_direct(s, job.get("kind") or "movie"):
             db.update_job(job["id"], state="transferring", bytes_sent=0,
                           phase="Waiting to send to your library")
             LED.announce("done")

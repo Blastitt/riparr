@@ -1285,6 +1285,7 @@ function identifyPrompt(j) {
   if ((j.episode_plan || {}).episodes) return seasonPrompt(j);
   const titles = (j.titles || []).filter(t => t.seconds >= 60);
   const music = j.kind === "music";
+  const data = j.kind === "data";
   return `
     <div class="job needs">
       <div class="job-head">
@@ -1296,9 +1297,13 @@ function identifyPrompt(j) {
       </div>
       ${music ? `
       <label class="f wide"><span>What is this album?</span>
-        <input id="ni-name" value="" placeholder="e.g. Pink Floyd - The Wall">
+        <input id="ni-name" value="${esc(j.title || "")}" placeholder="e.g. Pink Floyd - The Wall">
         <span class="help">The artist, a dash, then the album. The tracks are numbered;
-          Riparr remembers the name if this CD comes back.</span></label>` : `
+          Riparr remembers the name if this CD comes back.</span></label>` : data ? `
+      <label class="f wide"><span>What should the image be called?</span>
+        <input id="ni-name" value="${esc(j.title || "")}" placeholder="e.g. Age of Empires II">
+        <span class="help">Saved as this name with .iso on the end, in the Data
+          folder.</span></label>` : `
       <label class="f wide"><span>What is this film?</span>
         <input id="ni-name" value="${esc(j.title || "")}" placeholder="e.g. The Matrix (1999)">
         <span class="help">A year in brackets is used as the year. Without one Riparr
@@ -1316,7 +1321,7 @@ function identifyPrompt(j) {
             </label>`).join("")}
         </div>` : ""}
       <div class="btn-row">
-        <button class="btn primary" data-answer="${j.id}">Rip it</button>
+        <button class="btn primary" data-answer="${j.id}">${data ? "Save it" : "Rip it"}</button>
         <button class="btn" data-skip="${j.id}">Skip this disc</button>
       </div>
     </div>`;
@@ -1892,7 +1897,8 @@ settingsPages.library = async (s) => {
           <label class="f"><span>Folder</span>
             <input data-set="${folderKey}" data-dest-folder="${kind}"
                    value="${esc(s[folderKey] || "")}" placeholder="${
-                     kind === "tv" ? "TV" : kind === "music" ? "Music" : "Movies"}"></label>
+                     kind === "tv" ? "TV" : kind === "music" ? "Music"
+                     : kind === "data" ? "Data" : "Movies"}"></label>
         </div>
         <div class="dest-path" data-dest-path="${kind}">${
           sh ? esc(destPath(sh, s[folderKey])) : "no share configured"}</div>
@@ -1919,6 +1925,7 @@ settingsPages.library = async (s) => {
           ${row("movie", "Films", "movie_folder", "movie_share_id")}
           ${row("tv", "Television", "tv_folder", "tv_share_id")}
           ${row("music", "Music", "music_folder", "music_share_id")}
+          ${row("data", "Data discs", "data_folder", "data_share_id")}
         </div>`
       : `<div class="empty-state"><div class="big">${icon("hard-drive")}</div>
           <h2>No share configured</h2>
@@ -2092,7 +2099,45 @@ settingsPages.ripping = async (s) => {
   }
   const fmtNow = formats.find(f => f.id === s.music_format) || formats[0]
     || { id: "flac", qualities: [] };
+  const kindRow = (key, label, help) => `
+    <label class="f"><span>${label}</span>
+      <select data-set="${key}">
+        ${opt("rip", "Rip it (default)", s[key] || "rip")}
+        ${opt("show", "Show me first", s[key] || "rip")}
+        ${opt("ignore", "Leave it alone", s[key] || "rip")}
+      </select>
+      <span class="help">${help}</span></label>`;
+  const extrasRow = (key, label) => `
+    <label class="f"><span>${label}</span>
+      <select data-set="${key}">
+        ${opt("none", "Don't rip extras (default)", s[key] || "none")}
+        ${opt("all", "Rip all of them", s[key] || "none")}
+      </select>
+      <span class="help">Featurettes, deleted scenes and the like, filed in a
+        <b>Featurettes</b> folder where Plex and Jellyfin look. Duplicates, alternate
+        cuts and the decoy playlists some discs carry are left out.</span></label>`;
   return `
+  <div class="section"><h2>Auto Rip, by kind of disc</h2><div>
+    <p class="muted">What Auto Rip does once it knows what's in the tray. Riparr has to
+      read a disc to know what it is, so <b>Show me first</b> reads it and then waits
+      for you, and <b>Leave it alone</b> reads it and ejects it. Pressing <b>Rip</b>
+      yourself always rips.</p>
+    ${kindRow("auto_movie", "Films", "Show me first lets you check the name and which "
+      + "title is the film before anything is ripped.")}
+    ${extrasRow("movie_extras", "Film extras")}
+    ${kindRow("auto_tv", "TV seasons", "Rip it never stops the drive — if something "
+      + "can't be worked out, the disc is ripped anyway and only the filing waits (see "
+      + "Television below). Show me first lets you untick episodes and pick extras "
+      + "before it rips.")}
+    ${extrasRow("tv_extras", "TV extras")}
+    ${kindRow("auto_music", "Music CDs", "Show me first lets you check the album "
+      + "match before ripping.")}
+    ${kindRow("auto_data", "Data discs", "Anything that isn't a film, a season or "
+      + "music — an old game, a disc of photos. Saved whole as one ISO image in the "
+      + "Data folder, which keeps everything, including what an installer needs to "
+      + "boot.")}
+  </div></div>
+
   <div class="section"><h2>What to rip</h2><div>
     <label class="f"><span>Titles</span>
       <select data-set="rip_mode">
@@ -2132,12 +2177,11 @@ settingsPages.ripping = async (s) => {
         "A disc with six titles of the same length is a season disc, not a film with "
         + "five decoys. Turn this off if you only own films — every test that finds "
         + "television is a test that can be wrong about a film.")}
-    <label class="f"><span>Before ripping a season</span>
+    <label class="f"><span>When Riparr isn't sure about a season</span>
       <select data-set="on_season_disc">
-        ${opt("unsure", "Show me the plan when Riparr isn't sure (default)",
+        ${opt("unsure", "Rip it, and hold the filing for me (default)",
               s.on_season_disc)}
-        ${opt("ask", "Always show me the plan", s.on_season_disc)}
-        ${opt("auto", "Never — just rip it", s.on_season_disc)}
+        ${opt("auto", "Never — file its best guess", s.on_season_disc)}
       </select>
       <span class="help">The default never holds the drive. A disc Riparr can read and
         name is ripped and filed without stopping. If something can't be worked out —
@@ -2148,7 +2192,8 @@ settingsPages.ripping = async (s) => {
         <br><br>Episode order is read off the disc's "play all" list. Whether a show was
         released on disc in a different order from how it aired (Firefly is the famous
         one) is looked up on TVmaze, and the files are named by the episode each one
-        really is. "Always show me" stops before ripping instead.</span></label>
+        really is. To see every plan before it rips, set TV seasons to <b>Show me
+        first</b> under Auto Rip.</span></label>
     ${sw("tv_metadata", "Look up episode names", s.tv_metadata,
         "From TVmaze, which needs no account. Off gives you correctly numbered files "
         + "with no names — Plex and Jellyfin still match those perfectly, because they "

@@ -194,6 +194,11 @@ jobs:
           python server/tv-realdisc.test.py
           python server/tv-pipeline.test.py
 
+      # Auto Rip's per-kind rows (rip / show first / leave alone), film and TV extras,
+      # and data discs saved as ISO images, each through the whole pipeline.
+      - name: Each kind of disc does what its Auto Rip row says
+        run: python server/autorip-kinds.test.py
+
       # Music CDs, through the real tools: cd-paranoia reading a synthesized disc image,
       # cd-info reading its CD-Text, flac and lame encoding, bsdtar copying a data CD.
       # Nothing here had a CD drive when it was written, so the tools themselves are the

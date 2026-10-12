@@ -73,6 +73,7 @@ machines" are the same control.
 | **Television → Folder** | e.g. `TV` or `Shows` |
 | **Music → Share** | Point it at the share your music server reads. Defaults to the first share |
 | **Music → Folder** | e.g. `Music` |
+| **Data discs → Share / Folder** | Where ISO images of data discs go. `Data` by default |
 
 Under each block Riparr shows the full path it adds up to, and whether that share is
 **mounted** — which is what lets a rip be written straight into your library instead of
@@ -116,6 +117,22 @@ rather than straight into a library somebody is browsing. A folder named off the
 label is something you can fix in ten seconds; a queue that stopped at 2am waiting for
 you is not. Switch it to `Ask me` if your rips go directly into a library you browse.
 
+## Auto Rip, by kind of disc
+
+What Auto Rip does once it knows what's in the tray. Riparr has to read a disc to know
+what it is, so **Show me first** reads it and then waits on the Queue page, and **Leave
+it alone** reads it and ejects it. Pressing **Rip** yourself always rips, whatever the
+row says.
+
+| Setting | Choices | Notes |
+|---|---|---|
+| **Films** | **Rip it** *(default)* / Show me first / Leave it alone | Show me first lets you check the name and which title is the film before anything is ripped |
+| **Film extras** | **Don't rip extras** *(default)* / Rip all of them | Into a `Featurettes` folder inside the film's own folder. Duplicates, alternate cuts and the decoy playlists some discs carry are left out. Needs a naming template that gives each film its own folder (the default does) |
+| **TV seasons** | **Rip it** *(default)* / Show me first / Leave it alone | Rip it never holds the drive (see Television below). Show me first stops before ripping so you can untick episodes or pick extras |
+| **TV extras** | **Don't rip extras** *(default)* / Rip all of them | Into the show's `Featurettes` folder, named for their season |
+| **Music CDs** | **Rip it** *(default)* / Show me first / Leave it alone | Show me first shows the album match before ripping. Correct it and the corrected name is used |
+| **Data discs** | **Rip it** *(default)* / Show me first / Leave it alone | Anything that isn't a film, a season or music: an old game, a disc of photos. Saved whole as one ISO image, which keeps everything an installer needs, and opens on any computer. Unreadable sectors are filled with zeros and counted in a warning |
+
 ## Track selection
 
 Bigger effect on file size than anything else here.
@@ -146,7 +163,7 @@ Bigger effect on file size than anything else here.
 | Setting | Notes |
 |---|---|
 | **Look for season discs** | On. A disc with several titles of the same length is read as a season rather than a film with decoys. Turn it off if you only own films. |
-| **Before ripping a season** | **Show me the plan when Riparr isn't sure** *(default)* / Always show me / Never. The default never holds the drive: a disc Riparr can read and name is ripped and filed without stopping. When something can't be worked out (no season on the label, an earlier disc of the set not ripped yet, or no internet to check the episode guide), the disc is still ripped and ejected, and only the filing waits for you on the Queue page. A disc ripped before the one ahead of it files itself once that disc is done. **Always show me** stops before ripping, so you can untick episodes or pick extras first. |
+| **When Riparr isn't sure about a season** | **Rip it, and hold the filing for me** *(default)* / Never, file its best guess. Riparr never holds the drive: a disc it can read and name is ripped and filed without stopping. When something can't be worked out (no season on the label, an earlier disc of the set not ripped yet, or no internet to check the episode guide), the default still rips and ejects, and only the filing waits for you on the Queue page. A disc ripped before the one ahead of it files itself once that disc is done. To see every plan before it rips, set TV seasons to **Show me first** under Auto Rip. |
 | **Look up episode names** | On. From [TVmaze](https://www.tvmaze.com), no account needed. Off gives correctly numbered files with no names — Plex and Jellyfin match on the numbers, so they still land correctly. |
 | **Specials go in** | `Season 00` *(default)* / `Specials`. Both are read as season zero. Set the season to 0 on the episode plan to file a disc here. |
 

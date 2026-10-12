@@ -682,6 +682,43 @@ check("CD-Text of only punctuation is no name", MU.parse_cdtext(
     "CD-TEXT for Disc:\n\tTITLE: Real\nCD-TEXT for Track  1:\n\tPERFORMER: ?\n"),
     {"album": "Real", "artist": "", "tracks": {}})
 
+print("Show me first: the match is shown, and a correction is used")
+os.environ["RIPARR_MOCK_CD_IMAGE"] = CUE      # CD-Text: Test Artist / Test Album
+fresh_share()
+answering(lambda path, params: None)
+db.set("auto_music", "show")
+job_id, _ = rip.enqueue(force=True)
+rip._run_job(db.get_job(job_id))
+shown = db.get_job(job_id)
+check("waits before ripping", shown["state"], "needs_input")
+contains("saying what it thinks it is", shown["question"], "Test Artist - Test Album")
+check("with that in the box to correct", shown["title"], "Test Artist - Test Album")
+rip.answer(job_id, name="Real Artist - Real Album")
+rip._run_job(db.get_job(job_id))
+fixed = db.get_job(job_id)
+if fixed["state"] == "transferring":
+    rip._send_one(fixed)
+    fixed = db.get_job(job_id)
+check("ripped under the correction", (fixed["state"], share_files()[0]),
+      ("done", "Real Artist/Real Album/01 - Song 1.flac"))
+check("and the tracks moved with the artist",
+      {r["artist"] for r in db.album_plan(fixed)["tracks"]}, {"Real Artist"})
+print("Leave it alone ejects a CD, and Rip still rips it")
+db.set("auto_music", "ignore")
+fresh_share()
+job_id, _ = rip.enqueue(force=True)
+rip._run_job(db.get_job(job_id))
+check("left alone", db.get_job(job_id)["state"], "cancelled")
+contains("saying why", db.get_job(job_id)["error"], "ignore music CDs")
+job_id, _ = rip.enqueue(force=True, manual=True)
+rip._run_job(db.get_job(job_id))
+mj = db.get_job(job_id)
+if mj["state"] == "transferring":
+    rip._send_one(mj)
+    mj = db.get_job(job_id)
+check("pressed: ripped", mj["state"], "done")
+db.set("auto_music", "rip")
+
 print("a rip starts from an empty scratch folder, whatever a reused job number left")
 fresh_share()
 # The number the next job will get -- the one a restored backup would hand out again.
@@ -734,6 +771,32 @@ check("recorded as a file copy", (fj or {}).get("output"), "files")
 check("under the disc's name, folders kept, junk left behind", share_files(), [
     "Mp3 Mix/Loose song.mp3", "Mp3 Mix/Mix One/01 Track [Live].mp3",
     "Mp3 Mix/Mix One/folder.jpg"])
+
+print("a data CD with no music on it is saved as an ISO image")
+src2 = os.path.join(_tmp, "game-src")
+os.makedirs(src2)
+with open(os.path.join(src2, "SETUP.EXE"), "wb") as f:
+    f.write(b"MZ" + b"\0" * 4096)
+iso2 = os.path.join(_tmp, "game.iso")
+if shutil.which("xorriso"):
+    subprocess.run(["xorriso", "-as", "mkisofs", "-quiet", "-J", "-V", "OLD_GAME",
+                    "-o", iso2, src2], check=True)
+elif shutil.which("genisoimage"):
+    subprocess.run(["genisoimage", "-quiet", "-J", "-V", "OLD_GAME", "-o", iso2, src2],
+                   check=True)
+else:
+    subprocess.run(["hdiutil", "makehybrid", "-quiet", "-iso", "-joliet",
+                    "-default-volume-name", "OLD_GAME", "-o", iso2, src2], check=True)
+os.environ["RIPARR_MOCK_CD_IMAGE"] = iso2
+os.environ["RIPARR_MOCK_LABEL"] = "OLD_GAME"
+fresh_share()
+gj, why = run_disc()
+check("finished", (gj or {}).get("state"), "done")
+check("as a disc image", ((gj or {}).get("kind"), (gj or {}).get("output")),
+      ("data", "iso"))
+check("in the Data folder, not Music", share_files(under="nas/Media/Data"),
+      ["Old Game.iso"])
+del os.environ["RIPARR_MOCK_LABEL"]
 os.environ["RIPARR_MOCK_CD"] = "audio"
 os.environ["RIPARR_MOCK_CD_IMAGE"] = CUE
 
