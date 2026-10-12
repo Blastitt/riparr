@@ -141,6 +141,18 @@ check("named in order",
       [plan["episodes"][i]["episode_title"] for i in (0, 10, 12)],
       ["Chicken Jack", "The Birth of Evil (1)", "Jack and the Labyrinth"])
 
+
+# ── Samurai Jack, The Complete Fourth Season (Blu-ray, 2026-10-12) ───────────
+
+print("")
+print("Samurai Jack season 4: plain again, with one extra")
+titles, eps = load("samurai-jack-s4-bluray.info.txt", "tvmaze-1603-samurai-jack.json")
+found = tv.analyse(titles, MAKEMKV_MIN)
+check("thirteen episodes in playlist order, confirmed by the play-all",
+      ([t["index"] for t in found["episodes"]], found["order_source"]),
+      ([0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], "segments"))
+check("one extra", [t["index"] for t in found["extras"]], [4])
+
 print("")
 if failures:
     print("%d FAILED: %s" % (len(failures), ", ".join(failures)))
