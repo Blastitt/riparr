@@ -404,6 +404,79 @@ check("finished", dj["state"], "done")
 check("all six survived the transfer", len(share_files()), 6)
 db.set("transfer_mode", "burst")
 
+print("MakeMKV's own message is what a failure says")
+# Found on Samurai Jack season 2: the NAS stalled 800 MB into episode 12, and the job
+# failed with "Saving to MKV file" -- the phase label, not the reason.
+real = ("Error 'Internal error - Operation result is incorrect (178)' occurred while "
+        "writing data to '/srv/library/RiparrDumps/.riparr-incoming/job-2/ep-12/x.mkv' "
+        "at offset '838860800'")
+check("a write failure is the library's", rip._makemkv_failure(real)[0], "write")
+contains("and says so", rip._makemkv_failure(real)[1], "Couldn't write to your library")
+check("routine commentary is not a failure",
+      rip._makemkv_failure("Title #00821.mpls has length of 66 seconds which is less "
+                           "than minimum title length"), None)
+
+_real_mock_rip = rip._mock_rip_episode
+
+
+def failing(title, times, where):
+    """The mock rip, failing `times` times on one title the way MakeMKV does."""
+    left = {"n": times}
+
+    def rip_episode(job, out_dir, cancel_ev, row, progress, first_byte):
+        if int(row["title_index"]) == title and left["n"] > 0:
+            left["n"] -= 1
+            err = rip.RipFailed("Couldn't write to your library: it stopped accepting "
+                                "data partway through." if where == "write" else
+                                "The drive couldn't read part of the disc.")
+            err.where = where
+            raise err
+        return _real_mock_rip(job, out_dir, cancel_ev, row, progress, first_byte)
+    return rip_episode
+
+
+print("a share that stalls once costs one retry, onto the card")
+fresh_share()
+db.set("transfer_mode", "direct")
+rip._mock_rip_episode = failing(0, 1, "write")
+st = run(new_job("STALL_SHOW_S01_D01"))
+check("the season still finished", st["state"], "done")
+check("all six filed", len(share_files()), 6)
+retried = [e for e in db.episode_plan(st)["episodes"] if e["title_index"] == 0][0]
+check("the retried episode was read onto the card",
+      retried["path"].startswith(rip.STAGING), True)
+
+print("an episode that can't be read loses that episode, not the season")
+fresh_share()
+rip._mock_rip_episode = failing(5, 99, "read")
+bad = run(new_job("SCRATCHED_S01_D01"))
+check("the job says something needs doing", bad["state"], "failed")
+check("five episodes filed anyway", len(share_files()), 5)
+contains("naming the missing one", bad["error"], "S01E03 couldn't be ripped")
+contains("and what to do", bad["error"], "Put the disc back in")
+check("the disc is not recorded as ripped, so it can go back in",
+      rip._already_have(db.get_disc("fp-SCRATCHED_S01_D01")), False)
+
+print("putting it back in reads only what's missing")
+rip._mock_rip_episode = _real_mock_rip
+read = []
+
+
+def counting(job, out_dir, cancel_ev, row, progress, first_byte):
+    read.append(int(row["title_index"]))
+    return _real_mock_rip(job, out_dir, cancel_ev, row, progress, first_byte)
+
+
+rip._mock_rip_episode = counting
+again = run(new_job("SCRATCHED_S01_D01"))
+check("done", again["state"], "done")
+check("only the missing episode was read", read, [5])
+check("all six in the library, under the first attempt's numbers", share_files(),
+      ["nas/Media/TV/Scratched/Season 01/Scratched - S01E%02d.mkv" % n
+       for n in range(1, 7)])
+rip._mock_rip_episode = _real_mock_rip
+db.set("transfer_mode", "burst")
+
 # ── interrupted, then resumed ────────────────────────────────────────────────
 
 print("a season interrupted mid-transfer resumes where it stopped")

@@ -1433,6 +1433,13 @@ def _identify_season(job, s, d, titles, remembered):
     if job.get("chosen_title") is not None or remembered.get("title_index") is not None:
         return False, None
 
+    resumed = _resume_partial(job)
+    if resumed:
+        left = [r for r in season_rows(resumed) if r.get("state") != "done"]
+        log.info("Job %d: carrying on job %d -- %d left to read", job["id"],
+                 resumed["resumed_from"], len(left))
+        return True, _commit_season(job, s, d, titles, resumed)
+
     answered = db.episode_plan(job)
     if answered.get("episodes"):
         # The user has been asked and has answered. Their plan is the answer; none of it
@@ -1896,6 +1903,7 @@ def _run_makemkv(job, s, title_index, out_dir, cancel_ev, total_bytes,
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, bufsize=1)
     last_msg = ""
+    failure = []                    # (where, text) from the first MSG that means it failed
     first_byte_at = None
     try:
         for line in proc.stdout:
@@ -1952,6 +1960,9 @@ def _run_makemkv(job, s, title_index, out_dir, cancel_ev, total_bytes,
             m = MSG.match(line)
             if m:
                 log.info("Job %d: %s", job["id"], m.group(2))
+                why = _makemkv_failure(m.group(2))
+                if why and not failure:
+                    failure.append(why)
     finally:
         try:
             proc.stdout.close()
@@ -1960,10 +1971,42 @@ def _run_makemkv(job, s, title_index, out_dir, cancel_ev, total_bytes,
     rc = proc.wait()
 
     produced = sorted(f for f in os.listdir(out_dir) if f.lower().endswith(".mkv"))
-    if rc != 0 or not produced:
-        raise RipFailed(last_msg or "MakeMKV couldn't read this disc. If it's dirty "
-                                    "or scratched, clean it and try again.")
+    if rc != 0 or not produced or failure:
+        # A failed save leaves the part it wrote. Gone now, so a retry into the same
+        # folder cannot pick up 800 MB of a broken file as its answer.
+        for f in produced:
+            try:
+                os.remove(os.path.join(out_dir, f))
+            except OSError:
+                pass
+        where, text = failure[0] if failure else ("read", None)
+        err = RipFailed(text or "MakeMKV couldn't read this disc. If it's dirty or "
+                                "scratched, clean it and try again.")
+        err.where = where
+        raise err
     return os.path.join(out_dir, produced[0])
+
+
+def _makemkv_failure(msg):
+    """(where, what to tell a person) for a MakeMKV message that means the save failed.
+
+    The phase label -- "Saving to MKV file" -- is what used to be reported, which says
+    what MakeMKV was doing and nothing about what went wrong. The MSG lines say: found
+    on a real rip, a NAS that stalled mid-episode printed "Error 'Internal error -
+    Operation result is incorrect (178)' occurred while writing data to '...'". A
+    write failure is the destination's fault and worth retrying elsewhere; a read
+    failure is the disc's.
+    """
+    low = msg.lower()
+    if "while writing data" in low or "no space left" in low:
+        return ("write", "Couldn't write to %s: it stopped accepting data partway "
+                         "through." % ("your library" if P.LIBRARY_MOUNT in msg
+                                       else "the card"))
+    if ("read error" in low or "scsi error" in low or "while reading" in low
+            or "medium error" in low):
+        return ("read", "The drive couldn't read part of the disc. If it's dirty or "
+                        "scratched, clean it and put it back in.")
+    return None
 
 
 def season_rows(plan):
@@ -2041,7 +2084,10 @@ def _rip_season(job, s, cancel_ev):
     for n, row in enumerate(rows, 1):
         if cancel_ev.is_set():
             raise Cancelled()
-        if row.get("state") == "done":
+        if row.get("state") == "done" or (row.get("state") == "ripped"
+                                          and row.get("path")
+                                          and os.path.exists(row["path"])):
+            # Filed already, or read by an earlier attempt at this disc and waiting.
             done_before[0] += row.get("bytes") or 0
             continue
         out_dir = os.path.join(base, _row_dir(row))
@@ -2063,13 +2109,46 @@ def _rip_season(job, s, cancel_ev):
                 db.stage_start(job["id"], "save")
 
         db.update_job(job["id"], phase=where)
-        if P.MOCK:
-            path = _mock_rip_episode(job, out_dir, cancel_ev, row, progress, first_byte)
-        else:
-            path = _run_makemkv(job, s, row["title_index"], out_dir, cancel_ev,
-                                row.get("bytes") or 0, on_progress=progress,
-                                on_first_byte=first_byte)
+        path, err = None, None
+        for attempt in range(3):
+            if cancel_ev.is_set():
+                raise Cancelled()
+            try:
+                if P.MOCK:
+                    path = _mock_rip_episode(job, out_dir, cancel_ev, row, progress,
+                                             first_byte)
+                else:
+                    path = _run_makemkv(job, s, row["title_index"], out_dir, cancel_ev,
+                                        row.get("bytes") or 0, on_progress=progress,
+                                        on_first_byte=first_byte)
+                break
+            except Cancelled:
+                raise
+            except RipFailed as e:
+                err = e
+                log.warning("Job %d: %s failed (attempt %d): %s", job["id"],
+                            episode_label(row), attempt + 1, e)
+                # A share that stalled once may stall again. Write the retry to the
+                # card when there is room, and let the sender upload it like any card
+                # rip -- `_transfer_season` handles a season that is part each.
+                if (getattr(e, "where", "") == "write" and out_dir.startswith(base)
+                        and direct and _card_has_room(row.get("bytes") or 0)):
+                    out_dir = os.path.join(STAGING, "job-%d" % job["id"], _row_dir(row))
+                    os.makedirs(out_dir, exist_ok=True)
+                    log.info("Job %d: retrying %s onto the card", job["id"],
+                             episode_label(row))
+                db.update_job(job["id"], phase="%s — trying again" % where)
+        if path is None:
+            # One bad episode is one missing episode, not a lost season. The rest are
+            # read and filed; the job ends saying which are missing, and putting the
+            # disc back in reads only those (`_resume_partial`).
+            row["state"] = "failed"
+            row["error"] = str(err)
+            row.pop("path", None)
+            db.update_job(job["id"], episode_plan=plan)
+            continue
         row["state"] = "ripped"
+        row.pop("error", None)
         row["path"] = path
         row["bytes"] = os.path.getsize(path)
         done_before[0] += row["bytes"]
@@ -2080,7 +2159,16 @@ def _rip_season(job, s, cancel_ev):
     db.update_job(job["id"], episode_plan=plan, eta_seconds=None,
                   bytes_ripped=done_before[0],
                   bytes_total=sum(e.get("bytes") or 0 for e in rows))
+    if all(r.get("state") == "failed" for r in rows):
+        raise RipFailed(rows[0].get("error") or "Nothing on this disc could be read.")
     return base
+
+
+def _card_has_room(need):
+    try:
+        return shutil.disk_usage(STAGING).free > int(need * 1.1) + 2 * 2 ** 30
+    except OSError:
+        return False
 
 
 def _mock_rip(job, out_dir, cancel_ev):
@@ -2393,7 +2481,7 @@ def _transfer_season(job, s, base, cancel_ev):
     direct = use_direct(s, "tv")
     root = _library_root("tv")
 
-    pending = [r for r in rows if r.get("state") != "done"]
+    pending = [r for r in rows if r.get("state") not in ("done", "failed")]
     for n, row in enumerate(pending, 1):
         if cancel_ev.is_set():
             raise Cancelled()
@@ -2642,6 +2730,10 @@ def _finish_season(job, s, transport, folder, base, sent_from_card=False):
     rows = [e for e in plan["episodes"] if e.get("include", True)]
     extras = [x for x in plan.get("extras") or [] if x.get("include")]
     db.stage_end(job["id"], at=now)
+    missing = [r for r in season_rows(plan) if r.get("state") == "failed"]
+    if missing:
+        _finish_partial_season(job, plan, missing, transport, folder)
+        return
     if job.get("fingerprint"):
         db.record_disc(job["fingerprint"], label=job.get("disc_label"),
                        title=job.get("title"), kind="tv", ripped_at=now,
@@ -2653,6 +2745,9 @@ def _finish_season(job, s, transport, folder, base, sent_from_card=False):
                        job_id=job["id"])
     if not s.get("keep_local_copy", True):
         _cleanup_staging(job)
+    if plan.get("resumed_from"):
+        # Episodes the earlier attempt read were filed from its folder; it's empty now.
+        _cleanup_staging({"id": plan["resumed_from"]})
 
     db.update_job(job["id"], state="done", phase=None, finished_at=now,
                   eta_seconds=None, error=None, episode_plan=plan,
@@ -2676,6 +2771,69 @@ def _finish_season(job, s, transport, folder, base, sent_from_card=False):
                      % (len(rows), "" if len(rows) == 1 else "s",
                         (" and %d extra%s" % (len(extras), "" if len(extras) == 1 else "s"))
                         if extras else "", span, transport.describe(folder)))
+
+
+def _finish_partial_season(job, plan, missing, transport, folder):
+    """End a season that filed most of its episodes and couldn't read the rest.
+
+    Failed, because something needs doing -- but with the filed episodes left where they
+    are and named in the message, and the disc *not* recorded as ripped: putting it back
+    in is not a duplicate, it is the fix, and `_resume_partial` reads only what is
+    missing under the same numbering.
+    """
+    now = int(time.time())
+    filed = [r for r in season_rows(plan) if r.get("state") == "done"]
+    names = ", ".join(episode_label(r) for r in missing)
+    reason = missing[0].get("error") or "it couldn't be read"
+    msg = ("%s couldn't be ripped: %s %d other%s %s in your library. Put the disc back "
+           "in and Riparr rips only what's missing." % (
+               names, reason.rstrip(".") + ".", len(filed),
+               "" if len(filed) == 1 else "s", "is" if len(filed) == 1 else "are"))
+    db.update_job(job["id"], state="failed", phase=None, finished_at=now,
+                  eta_seconds=None, error=msg, episode_plan=plan,
+                  dest_path=transport.describe(folder) if filed else None)
+    LED.announce("failed")
+    log.warning("Job %d partly ripped: %s", job["id"], msg)
+    notify.send("failed", title=plan.get("series") or job.get("title") or "A disc",
+                body=msg)
+
+
+def _resume_partial(job):
+    """The plan of an earlier rip of this same disc that filed some episodes and not
+    others, ready to read only the rest -- or None.
+
+    Same disc means same titles, so the earlier plan applies as it stands: its numbering,
+    names and choices were settled then, and re-deriving them could number the missing
+    episodes differently from the ones already in the library.
+    """
+    fp = job.get("fingerprint")
+    if not fp:
+        return None
+    for prev in db.list_jobs(states=["failed"], limit=50):
+        if prev["id"] == job["id"] or prev.get("fingerprint") != fp:
+            continue
+        plan = db.episode_plan(prev)
+        rows = season_rows(plan)
+
+        def kept(r):
+            # Filed, or read and still sitting where it was read to: either way the
+            # disc doesn't need to give it up again.
+            return r.get("state") == "done" or (
+                r.get("state") == "ripped" and bool(r.get("path"))
+                and os.path.exists(r["path"]))
+        if not any(kept(r) for r in rows) or all(r.get("state") == "done" for r in rows):
+            continue
+        for r in rows:
+            if not kept(r):
+                r["state"] = "pending"
+                r.pop("path", None)
+                r.pop("error", None)
+        plan.pop("hold", None)
+        plan["resumed_from"] = prev["id"]
+        db.update_job(prev["id"], error=(prev.get("error") or "")
+                      + " (Carried on by job %d.)" % job["id"])
+        return plan
+    return None
 
 
 # ─────────────────────────── full-disc backup ───────────────────────────
