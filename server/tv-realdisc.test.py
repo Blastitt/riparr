@@ -222,6 +222,23 @@ check("named in order",
        "Book One: Water - Chapter Eight: Avatar Roku (Winter Solstice, Part 2)"])
 
 
+print("")
+print("Avatar Book One discs 2 and 3: the same authoring, and a third copy of each episode")
+for n, want, dups in ((2, ["00601.mpls", "00602.mpls", "00603.mpls", "00604.mpls",
+                            "00605.mpls", "00606.mpls", "00607.mpls", "00608.mpls"], 8),
+                      (3, ["00601.mpls", "00602.mpls", "00603.mpls", "00604.mpls"], 8)):
+    t_n, _ = load("avatar-book1-disc%d-bluray.info.txt" % n,
+                  "tvmaze-555-avatar-the-last-airbender.json")
+    f_n = tv.analyse(t_n, MAKEMKV_MIN)
+    check("disc %d: season 1, disc %d, from the disc's own name" % (n, n),
+          tv.season_from_label(t_n[0]["disc_name"]), (1, n))
+    check("disc %d: the with-opening versions, in order" % n,
+          [x["source"] for x in f_n["episodes"]], want)
+    # Disc 3 carries each episode three times: with the opening, without, and with
+    # commentary (00254-00257). All copies of the episodes, none of them extras.
+    check("disc %d: every other copy is a duplicate, not an extra" % n,
+          len(f_n["duplicates"]), dups)
+
 # ── the second witness: Wikidata, as it answered on 2026-10-13 ───────────────
 
 print("")
