@@ -943,7 +943,12 @@ def parse_info(text):
     code the box runs -- see server/fixtures/discs and tv-realdisc.test.py.
     """
     titles = {}
+    disc_name = ""
     for line in (text or "").splitlines():
+        c = CINFO_NAME.match(line)
+        if c:
+            disc_name = c.group(1)
+            continue
         m = TINFO.match(line)
         if not m:
             continue
@@ -965,7 +970,17 @@ def parse_info(text):
             t["segments"] = value
         elif code == 8:
             t["chapters"] = int(value or 0)
+    # The disc's own name, carried on every title so it survives the scan cache and
+    # the job's stored title list without a column of its own.
+    for t in titles.values():
+        t["disc_name"] = disc_name
     return [titles[k] for k in sorted(titles)]
+
+
+# CINFO 2: what the disc calls itself -- "Avatar: The Last Airbender Book One: Water
+# Disc 1" where the volume label says "Avatar_Book_1_Disc_1". Far better evidence for a
+# show's name than a 32-character label, and Riparr never read it.
+CINFO_NAME = re.compile(r'^CINFO:2,\d+,"(.*)"\s*$')
 
 
 def _disc_arg(device):
@@ -1506,12 +1521,18 @@ def _identify_season(job, s, d, titles, remembered):
         return False, None
 
     label = d.get("label") or job.get("disc_label") or ""
+    disc_name = next((t.get("disc_name") for t in titles if t.get("disc_name")), "")
     season, disc_no = tv.season_from_label(label)
+    named_season, named_disc = tv.season_from_label(disc_name)
+    season = season if season is not None else named_season
+    disc_no = disc_no if disc_no is not None else named_disc
     if remembered.get("season") is not None:
         season = remembered["season"]
 
-    series_name = (remembered.get("series_name") or tv.series_name_from_label(label)
-                   or pretty_label(label) or "")
+    # The disc's own name first, when it gives one: it is what the studio wrote, where
+    # the label is what fitted in 32 characters.
+    series_name = (remembered.get("series_name") or tv.series_name_from_label(disc_name)
+                   or tv.series_name_from_label(label) or pretty_label(label) or "")
 
     series, episode_list, options = None, [], []
     if s.get("tv_metadata", True) and series_name:
@@ -1521,7 +1542,8 @@ def _identify_season(job, s, d, titles, remembered):
                             if c["id"] == remembered["series_id"]), None)
                       or {"id": remembered["series_id"], "name": series_name})
         elif options:
-            series = options[0]
+            series = tv.pick_series(options, found.get("episode_seconds"))
+            options = [series] + [o for o in options if o is not series]
         if series:
             episode_list = tv.episodes(series["id"])
 

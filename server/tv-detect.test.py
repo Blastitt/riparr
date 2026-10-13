@@ -264,8 +264,21 @@ for label, want in [("THE_WIRE_S01_D03", (1, 3)),
                     ("BREAKING_BAD_SEASON_2_DISC_3", (2, 3)),
                     ("FIREFLY_DISC_1", (None, 1)),
                     ("GOT_S3_D2", (3, 2)),
-                    ("BLADE_RUNNER", (None, None))]:
+                    ("BLADE_RUNNER", (None, None)),
+                    # The other words box sets use for a season, and number words.
+                    ("Avatar_Book_1_Disc_1", (1, 1)),
+                    ("Avatar: The Last Airbender Book One: Water Disc 1", (1, 1)),
+                    ("Doctor_Who_Series_3_Disc_2", (3, 2)),
+                    ("FUTURAMA_VOL_4", (4, None)),
+                    ("Samurai Jack - The Complete First Season", (1, None)),
+                    ("FRIENDS_S10", (10, None))]:
     check(label, tv.season_from_label(label), want)
+check("the show is what comes before the season, subtitle and all left behind",
+      tv.series_name_from_label("Avatar: The Last Airbender Book One: Water Disc 1"),
+      "Avatar: The Last Airbender")
+check("...and \"The Complete\" is not part of a name",
+      tv.series_name_from_label("Samurai Jack - The Complete First Season"),
+      "Samurai Jack")
 check("series name is cleaned of the markers",
       tv.series_name_from_label("BREAKING_BAD_SEASON_2_DISC_3"), "Breaking Bad")
 check("...and of the disc marker alone",

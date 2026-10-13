@@ -286,6 +286,32 @@ def _find_play_all(titles, episode_seconds):
     return best
 
 
+def _furniture(titles):
+    """Segments shared by so many titles they cannot belong to any one episode.
+
+    An episode's own segment turns up in a handful of titles at most: the episode, a
+    second cut of it, the play-all. Something in four or more titles, and in at least
+    two-fifths of them, is a logo or a bumper.
+    """
+    count = {}
+    for t in titles:
+        for s in set(parse_segments(t.get("segments"))):
+            count[s] = count.get(s, 0) + 1
+    need = max(4, int(0.4 * len(titles) + 0.999))
+    return {s for s, n in count.items() if n >= need}
+
+
+def _without(title, furniture):
+    """A copy of `title` with the furniture segments taken out of its map -- unless
+    that would leave it with none, in which case it is left as it was."""
+    segs = [s for s in parse_segments(title.get("segments")) if s not in furniture]
+    if not segs or len(segs) == len(parse_segments(title.get("segments"))):
+        return title
+    out = dict(title)
+    out["segments"] = ",".join(str(s) for s in segs)
+    return out
+
+
 def _held(title, others):
     """The other titles whose segments all lie inside this one's segment map."""
     segs = set(parse_segments(title.get("segments")))
@@ -433,6 +459,16 @@ def analyse(titles, min_seconds=120):
     candidates = [t for t in titles if t.get("seconds", 0) >= floor]
     if len(candidates) < MIN_EPISODES:
         return None
+    # Segments every other title starts with -- a studio logo, a one-second bumper --
+    # are the disc's furniture, not part of any episode, and are taken out of every
+    # map before anything reads them. Avatar: The Last Airbender's Blu-ray puts segment
+    # 1100 (one second) in front of every episode's "with the opening" version and at
+    # the head of the play-all; left in, it made every one of those versions "overlap"
+    # every other, so de-duplication kept a random mix, and the play-all placed
+    # whichever one it kept first as episode one.
+    furniture = _furniture(candidates)
+    if furniture:
+        candidates = [_without(t, furniture) for t in candidates]
 
     # Order matters here and it is not the obvious order. Deduplicating first looks
     # right and is wrong: the play-all's segment map contains every episode's segments,
@@ -625,8 +661,28 @@ def looks_like_blob(titles, min_seconds=120):
 
 # ── what the disc calls itself ───────────────────────────────────────────────
 
-_SEASON_RE = re.compile(r"(?:^|[\s_\-])s(?:eason)?[\s_\-]*(\d{1,2})(?=$|[\s_\-]|d\d)", re.I)
+_NUMBER_WORDS = {w: n for n, w in enumerate(
+    "one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+    "fifteen sixteen seventeen eighteen nineteen twenty".split(), 1)}
+_ORDINALS = {w: n for n, w in enumerate(
+    "first second third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth "
+    "thirteenth fourteenth fifteenth sixteenth seventeenth eighteenth nineteenth "
+    "twentieth".split(), 1)}
+_NUM = r"(\d{1,2}|%s)" % "|".join(_NUMBER_WORDS)
+# "Season", and the other words a box set uses for one: Avatar's are "Book One", the
+# BBC's "Series 3", anime and older US sets "Volume 2". `S01` keeps its short form.
+_SEASON_RE = re.compile(
+    r"(?:^|[\s_\-:.])(?:s(?:eason)?|series|book|volume|vol)[\s_\-.]*%s"
+    r"(?=$|[\s_\-:.,]|d\d)" % _NUM, re.I)
+# ...and the ordinal form disc names use: "The Complete First Season".
+_ORDINAL_RE = re.compile(r"\b(%s)[\s_\-]+(?:season|series|book|volume)\b"
+                         % "|".join(_ORDINALS), re.I)
 _DISC_RE = re.compile(r"(?:^|[\s_\-])d(?:isc|isk)?[\s_\-]*(\d{1,2})(?=$|[\s_\-])", re.I)
+
+
+def _number(word):
+    w = word.lower()
+    return int(w) if w.isdigit() else _NUMBER_WORDS.get(w) or _ORDINALS.get(w)
 
 
 def season_from_label(label):
@@ -640,9 +696,9 @@ def season_from_label(label):
     s = (label or "").strip()
     if not s:
         return None, None
-    season = _SEASON_RE.search(s)
+    season = _SEASON_RE.search(s) or _ORDINAL_RE.search(s)
     disc = _DISC_RE.search(s)
-    return (int(season.group(1)) if season else None,
+    return (_number(season.group(1)) if season else None,
             int(disc.group(1)) if disc else None)
 
 
@@ -653,6 +709,14 @@ def series_name_from_label(label):
     are specific to a season disc and would otherwise poison a title search.
     """
     s = (label or "").strip()
+    # Everything before the season marker is the show: "Avatar: The Last Airbender Book
+    # One: Water Disc 1" is "Avatar: The Last Airbender", and the book's subtitle after
+    # it is not part of the name. Taking the marker out and keeping the rest searched
+    # TVmaze for "Avatar Book 1 Water" and found nothing.
+    m = _SEASON_RE.search(s) or _ORDINAL_RE.search(s)
+    if m and m.start() > 0:
+        s = s[:m.start()]
+        s = re.sub(r"[\s_\-:]*(?:the[\s_]+)?complete[\s_]*$", "", s, flags=re.I)
     s = _SEASON_RE.sub(" ", s)
     s = _DISC_RE.sub(" ", s)
     s = s.replace("_", " ").replace(".", " ")
@@ -720,10 +784,34 @@ def search_series(name, limit=6):
             "network": ((show.get("network") or show.get("webChannel") or {})
                         or {}).get("name") or "",
             "score": row.get("score") or 0,
+            "runtime": show.get("averageRuntime") or show.get("runtime") or 0,
         })
     with _cache_lock:
         _show_cache[key] = (time.time(), out)
     return out
+
+
+def pick_series(options, episode_seconds=None):
+    """The best of TVmaze's candidates for a disc, or None.
+
+    TVmaze's score is a text match, and two shows with the same name score the same:
+    "Avatar: The Last Airbender" is both the 2005 cartoon and Netflix's 2024 remake, at
+    1.6 each, and taking the first filed the cartoon's Blu-ray under the remake. Among
+    the candidates within a whisker of the best score, the one whose usual episode
+    length is nearest the disc's wins -- 22-minute episodes are not an hour-long show.
+    """
+    if not options:
+        return None
+    best = options[0].get("score") or 0
+    close = [o for o in options if (o.get("score") or 0) >= best - 0.05]
+    if len(close) < 2 or not episode_seconds:
+        return options[0]
+    minutes = episode_seconds / 60.0
+
+    def miss(o):
+        rt = o.get("runtime") or 0
+        return abs(rt - minutes) / minutes if rt else 9e9
+    return min(close, key=miss)
 
 
 def episodes(series_id, include_specials=True):

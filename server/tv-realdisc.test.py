@@ -178,6 +178,49 @@ check("named through to the end",
       [(e["episode"], e["episode_title"]) for e in plan["episodes"]][-2:],
       [(9, "Episode C"), (10, "Episode CI")])
 
+
+# ── Avatar: The Last Airbender, Book One: Water, disc 1 (Blu-ray, 2026-10-13) ─
+
+print("")
+print("Avatar Book One disc 1: a logo on every episode, and a name the label can't hold")
+titles, eps = load("avatar-book1-disc1-bluray.info.txt",
+                   "tvmaze-555-avatar-the-last-airbender.json")
+label = "Avatar_Book_1_Disc_1"
+disc_name = titles[0]["disc_name"]
+check("the disc's own name is read", disc_name,
+      "Avatar: The Last Airbender Book One: Water Disc 1")
+check("\"Book One\" is season 1, disc 1", tv.season_from_label(disc_name), (1, 1))
+check("and so is the label's \"Book_1\"", tv.season_from_label(label), (1, 1))
+check("the show's name comes from the disc, not the label",
+      tv.series_name_from_label(disc_name), "Avatar: The Last Airbender")
+found = tv.analyse(titles, MAKEMKV_MIN)
+# Every "with the opening" version (00601-00608) starts with segment 1100, a one-second
+# logo that is also the head of the play-all. Left in, 00607 became episode one.
+check("eight episodes, the versions with the opening, in disc order",
+      [t["source"] for t in found["episodes"]],
+      ["00601.mpls", "00602.mpls", "00603.mpls", "00604.mpls",
+       "00605.mpls", "00606.mpls", "00607.mpls", "00608.mpls"])
+check("the versions without it are duplicates, not extras",
+      sorted(t["source"] for t in found["duplicates"]),
+      ["01601.mpls", "01610.mpls", "01617.mpls", "01618.mpls",
+       "01619.mpls", "01620.mpls", "01621.mpls", "01622.mpls"])
+check("ordered by the play-all, trusted", (found["order_source"], found["confidence"]),
+      ("segments", "high"))
+# TVmaze's search, as it answered on the day: two shows with this exact name.
+options = [{"id": 38753, "name": "Avatar: The Last Airbender", "year": "2024",
+            "score": 1.5997504, "runtime": 59},
+           {"id": 555, "name": "Avatar: The Last Airbender", "year": "2005",
+            "score": 1.5994667, "runtime": 30}]
+check("22-minute episodes are the 2005 cartoon, not the hour-long remake",
+      tv.pick_series(options, found["episode_seconds"])["id"], 555)
+plan = tv.build_plan(found, season=1, first_episode=1,
+                     series={"id": 555, "name": "Avatar: The Last Airbender",
+                             "year": "2005"}, episode_list=eps)
+check("named in order",
+      [plan["episodes"][i]["episode_title"] for i in (0, 7)],
+      ["Book One: Water - Chapter One: The Boy in the Iceberg",
+       "Book One: Water - Chapter Eight: Avatar Roku (Winter Solstice, Part 2)"])
+
 print("")
 if failures:
     print("%d FAILED: %s" % (len(failures), ", ".join(failures)))
