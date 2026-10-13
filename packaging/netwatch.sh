@@ -164,6 +164,24 @@ reload_driver() {
     networkctl reconfigure "$IFACE" >/dev/null 2>&1 || true
 }
 
+# After a hard reset the box can come back as riparr-2.local: avahi hears the name it
+# announced before the crash still cached on the network, takes it for somebody else's,
+# and renames itself -- found 2026-10-13, after the watchdog rebooted a frozen box, when
+# riparr.local simply stopped answering. If nothing answers for our own name, the name
+# is free again and is ours to take back. If something does (a second Riparr), leave it.
+reclaim_name() {
+    command -v avahi-resolve >/dev/null 2>&1 || return 0
+    command -v avahi-set-host-name >/dev/null 2>&1 || return 0
+    local want got
+    want=$(hostname 2>/dev/null) || return 0
+    [ -n "$want" ] || return 0
+    got=$(timeout 10 avahi-resolve -4 -n "$want.local" 2>/dev/null | awk '{print $2}')
+    if [ -z "$got" ]; then
+        log "Nothing answers for $want.local (renamed after a restart?); taking the name back."
+        avahi-set-host-name "$want" 2>/dev/null || warn "Couldn't set the mDNS name back to $want."
+    fi
+}
+
 main() {
     local fails=0 did_assoc=0 did_reload=0 deferred=0
 
@@ -190,6 +208,7 @@ main() {
                 log "$IFACE answered again after $fails failed probe(s)."
             fi
             fails=0; did_assoc=0; did_reload=0; deferred=0
+            reclaim_name
             continue
         fi
 

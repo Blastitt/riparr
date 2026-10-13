@@ -33,9 +33,13 @@ install -d -m 0755 "$LIB"
 # ── helper scripts ──
 # Every root-side helper the one-way doors call. Listed rather than globbed so a stray
 # file in packaging/ cannot become a privileged script by being dropped there.
+netwatch_changed=0
 for s in wifi-apply.sh usbhost-fix.sh makemkv-run.sh netwatch.sh dvdtools-install.sh \
          cdtools-install.sh; do
     [ -f "$PKG/$s" ] || continue
+    if [ "$s" = netwatch.sh ] && ! cmp -s "$PKG/$s" "$LIB/$s"; then
+        netwatch_changed=1
+    fi
     install -o root -g root -m 0755 "$PKG/$s" "$LIB/$s"
 done
 
@@ -128,6 +132,13 @@ if [ -f /etc/systemd/system/riparr-netwatch.service ]; then
     if ! systemctl is-active --quiet riparr-netwatch.service; then
         systemctl start riparr-netwatch.service 2>/dev/null || true
         say "Wi-Fi watchdog started"
+    elif [ "$netwatch_changed" = 1 ]; then
+        # A running watchdog keeps the old script until it restarts, so a fix to it
+        # reached no box until its next reboot. Restarting resets its escalation count,
+        # which is why it is otherwise left alone -- but an update arrived over this
+        # network, so there is no outage in progress to lose track of.
+        systemctl restart riparr-netwatch.service 2>/dev/null || true
+        say "Wi-Fi watchdog restarted with the new version"
     else
         say "Wi-Fi watchdog already running (left alone)"
     fi
