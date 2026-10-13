@@ -185,11 +185,17 @@ fi
 # Riparr never uses Bluetooth, and on this chip it shares the radio with Wi-Fi. When the
 # Wi-Fi firmware hung, the driver's own recovery tried to power-cycle the chip and was
 # refused -- "can not power off, other module is on" -- because Bluetooth was holding it,
-# so Wi-Fi never came back. Only the part of the vendor unit that starts Bluetooth is
-# replaced: its other two steps (loading sunxi_addr, unblocking the radios) are ones
-# the Wi-Fi side relies on too, and stay.
+# so Wi-Fi never came back. Not starting hciattach is not enough: the driver's own
+# sprdbt_tty powers the chip's Bluetooth side whenever the Bluetooth rfkill switch is
+# unblocked, and the vendor unit unblocks everything ("power state:5" -- Wi-Fi and
+# Bluetooth -- with no Bluetooth service running at all). So the radio is blocked as
+# well. sunxi_addr still loads and Wi-Fi is still unblocked: the Wi-Fi side needs both.
 if systemctl cat aw859a-bluetooth.service >/dev/null 2>&1; then
     want='[Service]
+ExecStartPre=
+ExecStartPre=/sbin/modprobe sunxi_addr
+ExecStartPre=/usr/sbin/rfkill unblock wifi
+ExecStartPre=/usr/sbin/rfkill block bluetooth
 ExecStart=
 ExecStart=/bin/true'
     conf=/etc/systemd/system/aw859a-bluetooth.service.d/riparr-no-bluetooth.conf
@@ -197,7 +203,8 @@ ExecStart=/bin/true'
         mkdir -p "$(dirname "$conf")"
         printf '%s\n' "$want" > "$conf"
         systemctl daemon-reload
-        say "Bluetooth will stay off from the next boot (it blocked Wi-Fi recovery)"
+        rfkill block bluetooth 2>/dev/null || true
+        say "Bluetooth off (it blocked Wi-Fi recovery)"
     fi
 fi
 
