@@ -188,17 +188,38 @@ f3 = tv.analyse(DISAGREE, FLOOR)
 check("the play-all is authoritative", f3["order_source"], "segments")
 check("so the .mpls order is overruled", [e["index"] for e in f3["episodes"]], [0, 1, 2])
 
-print("a partial segment map is refused, not half-used")
-# One episode is not in the play-all's map. Half a season in the right order and half
-# appended arbitrarily is harder to spot than an obviously unsorted one.
+print("a play-all that stops short orders the rest by segment, when the disc agrees")
+# Samurai Jack season 5's shape: the play-all holds episodes 1-2 and stops; episode 3
+# is a playlist numbered after them, on the segment after theirs. The playlist numbers
+# and the segment numbers are two separate records, and they agree.
 PARTIAL = [t(0, 42, segments="5", source="00801.mpls"),
            t(1, 42, segments="6", source="00802.mpls"),
            t(2, 42, segments="99", source="00803.mpls"),
            t(9, 126, 11.0, segments="5,6", source="00700.mpls", chapters=18)]
 f4 = tv.analyse(PARTIAL, FLOOR)
-check("falls through to playlist numbering", f4["order_source"], "source")
-check("and gets the right answer anyway",
-      [e["index"] for e in f4["episodes"]], [0, 1, 2])
+check("placed past the play-all, trusted",
+      ([e["index"] for e in f4["episodes"]], f4["order_source"], f4["confidence"]),
+      ([0, 1, 2], "segments", "high"))
+check("and the user is told", f4["beyond_play_all"], [2])
+
+print("...and only shows its guess when the two records disagree")
+# The same, but the episode past the play-all has a playlist number from before the
+# run. One record says "last", the other "first": not a fact, so not trusted.
+DISAGREE2 = [t(0, 42, segments="5", source="00801.mpls"),
+             t(1, 42, segments="6", source="00802.mpls"),
+             t(2, 42, segments="99", source="00800.mpls"),
+             t(9, 126, 11.0, segments="5,6", source="00700.mpls", chapters=18)]
+f4d = tv.analyse(DISAGREE2, FLOOR)
+check("still all three episodes", sorted(e["index"] for e in f4d["episodes"]), [0, 1, 2])
+check("but at medium confidence, so it is checked", f4d["confidence"], "medium")
+
+print("a map whose segments aren't in order is not extended")
+SCRAMBLED = [t(0, 42, segments="7", source="00801.mpls"),
+             t(1, 42, segments="5", source="00802.mpls"),
+             t(2, 42, segments="99", source="00803.mpls"),
+             t(9, 126, 11.0, segments="7,5", source="00700.mpls", chapters=18)]
+f4s = tv.analyse(SCRAMBLED, FLOOR)
+check("falls through to playlist numbering", f4s["order_source"], "source")
 
 print("an episode-length title outside a complete play-all is an extra")
 # Samurai Jack season 2's shape: the play-all runs exactly as long as the episodes it

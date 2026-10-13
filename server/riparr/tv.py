@@ -363,6 +363,49 @@ def _order_by_segments(episodes, play_all):
     return [t for _, t in sorted(placed, key=lambda x: x[0])]
 
 
+def _beyond_agrees(ordered, beyond):
+    """Whether the playlist numbers back up where the segment numbers put the episodes
+    past the play-all: all playlists, numbered upward in that order, after the last of
+    the play-all's own run in the same block."""
+    if not beyond:
+        return False
+    if not all((t.get("source") or "").lower().endswith(".mpls") for t in beyond):
+        return False
+    nums = [_source_number(t) for t in beyond]
+    if None in nums or nums != sorted(nums) or len(set(nums)) != len(nums):
+        return False
+    run = [n for n in (_source_number(t) for t in ordered if t not in beyond)
+           if n is not None and n // 100 == nums[0] // 100]
+    return bool(run) and nums[0] > max(run)
+
+
+def _order_past_play_all(episodes, play_all):
+    """Order a disc whose play-all holds only some of its episodes, or None.
+
+    Samurai Jack season 5: the play-all runs episodes 1-8 and stops; 9 and 10 sit after
+    it. When the play-all lists its segments in ascending order -- the disc was authored
+    with segment numbers in broadcast order -- and every episode is one segment, the
+    segment numbers themselves are that order, so episodes the play-all leaves out slot
+    in where their numbers fall. Anything less regular than that is not trusted.
+    """
+    if not play_all:
+        return None
+    order = parse_segments(play_all.get("segments"))
+    if not order or order != sorted(order) or len(set(order)) != len(order):
+        return None
+    keys = []
+    for t in episodes:
+        segs = parse_segments(t.get("segments"))
+        if len(segs) != 1:
+            return None
+        keys.append((segs[0], t))
+    if len({k for k, _ in keys}) != len(keys):
+        return None
+    if not any(k in set(order) for k, _ in keys):
+        return None
+    return [t for _, t in sorted(keys, key=lambda x: x[0])]
+
+
 def _order_by_source(episodes):
     """Order by .mpls number, or None if the filenames don't support it.
 
@@ -461,12 +504,32 @@ def analyse(titles, min_seconds=120):
     # (playlist numbering) filed episode 12 as E01. Only when the play-all holds most of
     # the cluster, and runs as long as the titles it holds: one that is longer than its
     # map accounts for has a map we can't read fully, and then nothing is left out.
+    #
+    # But not a *sibling* of the episodes: a playlist numbered in the same run as them.
+    # Samurai Jack season 5's play-all stops at episode 8, and episodes 9 and 10 are
+    # 00808.mpls and 00809.mpls, right after 00800-00807. Excluding everything outside
+    # the play-all filed them as unticked extras, with high confidence, unattended. A
+    # bonus feature is the other shape: a bare .m2ts (season 2's 02630.m2ts), or a
+    # playlist from another block.
     outside = []
     pa_segs = set(parse_segments((play_all or {}).get("segments")))
     if pa_segs:
+        inside_blocks = [n // 100 for n in (_source_number(e) for e in episodes
+                         if set(parse_segments(e.get("segments"))) & pa_segs)
+                         if n is not None]
+        block = max(set(inside_blocks), key=inside_blocks.count) if inside_blocks else None
+
+        def sibling(e):
+            n = _source_number(e)
+            return ((e.get("source") or "").lower().endswith(".mpls")
+                    and n is not None and block is not None and n // 100 == block)
         outs = [e for e in episodes if parse_segments(e.get("segments"))
-                and not set(parse_segments(e.get("segments"))) & pa_segs]
-        held = sum(e["seconds"] for e in episodes if e not in outs)
+                and not set(parse_segments(e.get("segments"))) & pa_segs
+                and not sibling(e)]
+        # What the play-all actually holds -- not its siblings beyond it, which it
+        # cannot be expected to run as long as.
+        held = sum(e["seconds"] for e in episodes
+                   if set(parse_segments(e.get("segments"))) & pa_segs)
         if (outs and len(episodes) - len(outs) >= max(MIN_EPISODES, len(outs) + 1)
                 and PLAY_ALL_SUM_LOW <= play_all["seconds"] / float(held or 1)
                 <= PLAY_ALL_SUM_HIGH):
@@ -476,6 +539,20 @@ def analyse(titles, min_seconds=120):
 
     ordered = _order_by_segments(episodes, play_all)
     order_source = "segments"
+    confidence = None
+    beyond = []
+    if ordered is None:
+        ordered = _order_past_play_all(episodes, play_all)
+        if ordered is not None:
+            pa = set(parse_segments(play_all.get("segments")))
+            beyond = [t for t in ordered
+                      if not set(parse_segments(t.get("segments"))) & pa]
+            # Trusted as far as the play-all only if the playlist numbers say the same
+            # thing as the segment numbers: every episode past it a playlist, numbered
+            # upward in the order placed, after the play-all's own run. Two independent
+            # records agreeing is a fact; one alone is a good guess, and is shown.
+            confidence = "high" if _beyond_agrees(ordered, beyond) else "medium"
+            beyond = [t["index"] for t in beyond]
     if ordered is None:
         ordered = _order_by_source(episodes)
         order_source = "source"
@@ -507,8 +584,9 @@ def analyse(titles, min_seconds=120):
         "dedup_signal": _dedup_signal(remaining),
         "doubles": [t["index"] for t in doubles],
         "outside_play_all": [t["index"] for t in outside],
+        "beyond_play_all": beyond,
         "order_source": order_source,
-        "confidence": ORDER_TRUST[order_source],
+        "confidence": confidence or ORDER_TRUST[order_source],
         "episode_seconds": int(episode_seconds),
     }
 
@@ -866,6 +944,12 @@ def plan_warnings(plan, found, episode_list=None):
     if found.get("play_all"):
         out.append("The “play all” title was excluded. It's every episode in "
                    "one file, and it's what gave us the episode order.")
+    if found.get("beyond_play_all"):
+        n = len(found["beyond_play_all"])
+        out.append("The disc's \u201cplay all\u201d stops short: %d episode%s after it %s "
+                   "placed by where %s on the disc, which continues the same order."
+                   % (n, "" if n == 1 else "s", "is" if n == 1 else "are",
+                      "it sits" if n == 1 else "they sit"))
     for idx in found.get("outside_play_all") or []:
         secs = next((x.get("seconds", 0) for x in found.get("extras") or []
                      if x["index"] == idx), 0)

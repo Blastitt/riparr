@@ -153,6 +153,31 @@ check("thirteen episodes in playlist order, confirmed by the play-all",
       ([0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], "segments"))
 check("one extra", [t["index"] for t in found["extras"]], [4])
 
+
+# ── Samurai Jack, Season 5 (Blu-ray, 2026-10-12) ─────────────────────────────
+
+print("")
+print("Samurai Jack season 5: the play-all stops at episode 8")
+titles, eps = load("samurai-jack-s5-bluray.info.txt", "tvmaze-1603-samurai-jack.json")
+found = tv.analyse(titles, MAKEMKV_MIN)
+# Ten episodes. The play-all holds 1-8; 9 and 10 are 00808.mpls and 00809.mpls, on
+# segments 2624 and 2625, right after it. Season 2's rule (outside the play-all means
+# extra) filed them as unticked extras, at high confidence, unattended.
+check("ten episodes, not eight",
+      [t["index"] for t in found["episodes"]], [0, 1, 2, 5, 6, 7, 8, 9, 13, 10])
+check("9 and 10 placed past the play-all, and trusted",
+      (found["beyond_play_all"], found["confidence"]), ([13, 10], "high"))
+check("00100.mpls is episode 7 again",
+      found["episodes"][6]["source"], "00100.mpls")
+check("the five long bonus .m2ts files are extras, not episodes",
+      sorted(t["index"] for t in found["extras"]), [4, 16, 18, 19, 20, 21, 22])
+plan = tv.build_plan(found, season=5, first_episode=1,
+                     series={"id": 1603, "name": "Samurai Jack", "year": "2001"},
+                     episode_list=eps)
+check("named through to the end",
+      [(e["episode"], e["episode_title"]) for e in plan["episodes"]][-2:],
+      [(9, "Episode C"), (10, "Episode CI")])
+
 print("")
 if failures:
     print("%d FAILED: %s" % (len(failures), ", ".join(failures)))
