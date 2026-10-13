@@ -303,6 +303,23 @@ check("the double carries both names",
 check("and the warning says which episodes it holds",
       any("(E12-E13)" in w for w in tv.plan_warnings(plan_d2, f_d2, eps)), True)
 
+# ── Avatar Book Two: Earth, disc 3 (Blu-ray, 2026-10-13) ─────────────────────
+
+print("")
+print("Avatar Book Two disc 3: the season ends on a double")
+b2d3, _ = load("avatar-book2-disc3-bluray.info.txt", "tvmaze-555-avatar-the-last-airbender.json")
+f_d3 = tv.analyse(b2d3, MAKEMKV_MIN)
+plan_d3 = tv.build_plan(f_d3, season=2, first_episode=17,
+                        series={"id": 555, "name": "Avatar: The Last Airbender",
+                                "year": "2005"}, episode_list=eps)
+check("E17, E18, then the finale as E19-E20",
+      [(r["episode"], r["episode_last"]) for r in plan_d3["episodes"]],
+      [(17, 17), (18, 18), (19, 20)])
+check("the commentary-carrying copies, trusted",
+      ([t["source"] for t in f_d3["episodes"]], f_d3["confidence"]),
+      (["01601.mpls", "01602.mpls", "00603.mpls"], "high"))
+check("the bonus streams are extras", len(f_d3["extras"]), 7)
+
 # ── the second witness: Wikidata, as it answered on 2026-10-13 ───────────────
 
 print("")
