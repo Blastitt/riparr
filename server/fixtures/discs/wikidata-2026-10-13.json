@@ -1329,5 +1329,227 @@
 "value": "1"
 }
 }
+],
+"avatar_s2": [
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Drill"
+},
+"en": {
+"type": "literal",
+"value": "13"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Chase"
+},
+"en": {
+"type": "literal",
+"value": "8"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Bitter Work"
+},
+"en": {
+"type": "literal",
+"value": "9"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Avatar State"
+},
+"en": {
+"type": "literal",
+"value": "1"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Appa's Lost Days"
+},
+"en": {
+"type": "literal",
+"value": "16"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Swamp"
+},
+"en": {
+"type": "literal",
+"value": "4"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Avatar Day"
+},
+"en": {
+"type": "literal",
+"value": "5"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Guru"
+},
+"en": {
+"type": "literal",
+"value": "19"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "City of Walls and Secrets"
+},
+"en": {
+"type": "literal",
+"value": "14"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Desert"
+},
+"en": {
+"type": "literal",
+"value": "11"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Serpent's Pass"
+},
+"en": {
+"type": "literal",
+"value": "12"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Return to Omashu"
+},
+"en": {
+"type": "literal",
+"value": "3"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Earth King"
+},
+"en": {
+"type": "literal",
+"value": "18"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Library"
+},
+"en": {
+"type": "literal",
+"value": "10"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Blind Bandit"
+},
+"en": {
+"type": "literal",
+"value": "6"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Cave of Two Lovers"
+},
+"en": {
+"type": "literal",
+"value": "2"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Crossroads of Destiny"
+},
+"en": {
+"type": "literal",
+"value": "20"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Lake Laogai"
+},
+"en": {
+"type": "literal",
+"value": "17"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Tales of Ba Sing Se"
+},
+"en": {
+"type": "literal",
+"value": "15"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Zuko Alone"
+},
+"en": {
+"type": "literal",
+"value": "7"
+}
+}
 ]
 }

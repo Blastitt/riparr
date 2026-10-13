@@ -189,18 +189,31 @@ def _dedup(candidates):
     before it runs and costs one unticked box. Merging two distinct episodes deletes one
     of them from the season silently, and the user finds out much later, with the disc
     back in its box. So this errs towards duplicates, and `plan_warnings` says it did.
+
+    Between copies of the same footage, the one with more audio tracks, then more
+    chapters, is the episode. Avatar Book Two disc 1 carries episode 6 three times over
+    one stream file: 00254.mpls with a single track (the commentary), 00606.mpls with the
+    four normal tracks, and 01606.mpls with those four and the commentary after them.
+    00254 and 00606 are the same length, and the lower title number won the tie: the
+    season would have been filed with commentary in place of sound.
     """
     if not _dedup_signal(candidates):
         return list(candidates)
     kept = []
-    for t in sorted(candidates, key=lambda x: (-x["seconds"], x["index"])):
+    for t in sorted(candidates, key=lambda x: (-x["seconds"], -x.get("audio", 0),
+                                               -x.get("chapters", 0), x["index"])):
         segs = set(parse_segments(t.get("segments")))
         src = (t.get("source") or "").strip().lower()
         dup = False
-        for k in kept:
+        for i, k in enumerate(kept):
             ksegs = set(parse_segments(k.get("segments")))
             if segs and ksegs:
                 if segs & ksegs:
+                    # The same footage exactly: a second of rounding must not let the
+                    # commentary copy beat the one with the sound.
+                    if segs == ksegs and ((t.get("audio", 0), t.get("chapters", 0))
+                                          > (k.get("audio", 0), k.get("chapters", 0))):
+                        kept[i] = t
                     dup = True
                     break
             elif src and src == (k.get("source") or "").strip().lower():

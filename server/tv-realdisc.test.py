@@ -226,18 +226,53 @@ print("")
 print("Avatar Book One discs 2 and 3: the same authoring, and a third copy of each episode")
 for n, want, dups in ((2, ["00601.mpls", "00602.mpls", "00603.mpls", "00604.mpls",
                             "00605.mpls", "00606.mpls", "00607.mpls", "00608.mpls"], 8),
-                      (3, ["00601.mpls", "00602.mpls", "00603.mpls", "00604.mpls"], 8)):
+                      # Disc 3's no-opening copies also carry the commentary, as a
+                      # fifth track after the normal four: the most complete copies.
+                      (3, ["01601.mpls", "01602.mpls", "01603.mpls", "01604.mpls"], 8)):
     t_n, _ = load("avatar-book1-disc%d-bluray.info.txt" % n,
                   "tvmaze-555-avatar-the-last-airbender.json")
     f_n = tv.analyse(t_n, MAKEMKV_MIN)
     check("disc %d: season 1, disc %d, from the disc's own name" % (n, n),
           tv.season_from_label(t_n[0]["disc_name"]), (1, n))
-    check("disc %d: the with-opening versions, in order" % n,
+    check("disc %d: the most complete copy of each episode, in order" % n,
           [x["source"] for x in f_n["episodes"]], want)
     # Disc 3 carries each episode three times: with the opening, without, and with
     # commentary (00254-00257). All copies of the episodes, none of them extras.
     check("disc %d: every other copy is a duplicate, not an extra" % n,
           len(f_n["duplicates"]), dups)
+
+# ── Avatar Book Two: Earth, disc 1 (Blu-ray, 2026-10-13) ─────────────────────
+
+print("")
+print("Avatar Book Two disc 1: a commentary-only copy as long as the episode")
+b2, _ = load("avatar-book2-disc1-bluray.info.txt", "tvmaze-555-avatar-the-last-airbender.json")
+check("Book Two is season 2, disc 1", tv.season_from_label(b2[0]["disc_name"]), (2, 1))
+by_src = {t["source"]: t for t in b2}
+check("the parser counts audio tracks: commentary-only, normal, normal plus commentary",
+      [by_src[s]["audio"] for s in ("00254.mpls", "00606.mpls", "01606.mpls")], [1, 4, 5])
+f_b2 = tv.analyse(b2, MAKEMKV_MIN)
+# Episode 6 is one stream file under three playlists. 00254.mpls (one track, the
+# commentary) and 00606.mpls (the four normal tracks) are both 24:32, and the lower
+# title number won the tie: episodes 6 and 8 would have been ripped as commentary alone.
+check("no episode is a commentary-only copy",
+      [t["audio"] >= 4 for t in f_b2["episodes"]], [True] * 8)
+check("episodes 6 and 8 are the copies with every track, commentary last",
+      [t["source"] for t in f_b2["episodes"]][5:],
+      ["01606.mpls", "00607.mpls", "01608.mpls"])
+# Episodes 1-5 keep the opening in a segment of its own (00601 = 1093,1094,1099) and
+# 6-8 have it in the episode's file. Both shapes are one episode each.
+check("eight episodes, ordered by the play-all",
+      (len(f_b2["episodes"]), f_b2["play_all"]["source"], f_b2["order_source"],
+       f_b2["confidence"]), (8, "00600.mpls", "segments", "high"))
+check("the 24-minute bare stream outside the play-all is an extra",
+      [t["source"] for t in f_b2["extras"]], ["00013.m2ts"])
+plan_b2 = tv.build_plan(f_b2, season=2, first_episode=1,
+                        series={"id": 555, "name": "Avatar: The Last Airbender",
+                                "year": "2005"}, episode_list=eps)
+check("named in order",
+      [plan_b2["episodes"][i]["episode_title"] for i in (0, 7)],
+      ["Book Two: Earth - Chapter One: The Avatar State",
+       "Book Two: Earth - Chapter Eight: The Chase"])
 
 # ── the second witness: Wikidata, as it answered on 2026-10-13 ───────────────
 
@@ -268,6 +303,9 @@ avatar_titles = WD.parse_episode_titles(wd["avatar_s1"])
 verdict = tv.cross_check(plan["episodes"], eps, avatar_titles)
 check("Avatar: the two sources agree on all eight names",
       (verdict["verdict"], verdict["agree"]), ("agree", 8))
+v_b2 = tv.cross_check(plan_b2["episodes"], eps, WD.parse_episode_titles(wd["avatar_s2"]))
+check("and on Book Two's first eight",
+      (v_b2["verdict"], v_b2["agree"]), ("agree", 8))
 
 sj_titles = WD.parse_episode_titles(wd["samurai_jack_s1"])
 sj_titles_by_n = dict(sj_titles)

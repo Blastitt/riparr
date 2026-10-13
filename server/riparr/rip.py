@@ -723,6 +723,9 @@ def fingerprint(drive, on_progress=None):
 
 
 TINFO = re.compile(r'^TINFO:(\d+),(\d+),\d+,"(.*)"\s*$')
+# SINFO <title>,<stream>,1,6202: that stream is audio. Counted so two playlists of the
+# same footage can be told apart: a commentary copy carries one track, the episode four.
+SINFO_AUDIO = re.compile(r'^SINFO:(\d+),\d+,1,6202,')
 _DURATION = re.compile(r"^(?:(\d+):)?(\d+):(\d+)$")
 
 
@@ -949,13 +952,19 @@ def parse_info(text):
         if c:
             disc_name = c.group(1)
             continue
+        a = SINFO_AUDIO.match(line)
+        if a:
+            t = titles.get(int(a.group(1)))
+            if t is not None:
+                t["audio"] = t.get("audio", 0) + 1
+            continue
         m = TINFO.match(line)
         if not m:
             continue
         idx, code, value = int(m.group(1)), int(m.group(2)), m.group(3)
         t = titles.setdefault(idx, {"index": idx, "seconds": 0, "bytes": 0,
                                     "name": "", "file": "", "source": "",
-                                    "segments": "", "chapters": 0})
+                                    "segments": "", "chapters": 0, "audio": 0})
         if code == 9:
             t["seconds"] = _seconds(value)
         elif code == 11:
