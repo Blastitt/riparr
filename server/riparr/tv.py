@@ -1052,8 +1052,12 @@ def number_rows(rows, season, start, episode_list=None, dvd_map=None, typed=()):
             name = a.get("name") or ""
         else:
             r["season"], r["episode"], r["episode_last"] = season, p, p + span - 1
-            name = (by_number.get((season, p)) or {}).get("name") or "" \
-                if season is not None else ""
+            # A two-episode file carries both names, joined the way Sonarr joins them.
+            # Avatar Book Two disc 2 has "The Serpent's Pass" and "The Drill" welded into
+            # one stream; named after the first alone, the second had no name anywhere.
+            names = [(by_number.get((season, k)) or {}).get("name") or ""
+                     for k in range(p, p + span)] if season is not None else [""]
+            name = " + ".join(x for x in names if x)
         if int(r.get("title_index", -1)) not in typed:
             r["episode_title"] = name
     return use_dvd
@@ -1143,11 +1147,12 @@ def plan_warnings(plan, found, episode_list=None):
                    "all”, so it's listed under extras rather than numbered — usually a "
                    "bonus episode or a featurette. Tick it there to keep it."
                    % (idx, round(secs / 60.0)))
-    if found.get("doubles"):
-        out.append("%d title%s twice the usual length, numbered as a two-episode file "
-                   "(S01E01-E02), which is how a premiere or finale is normally shipped."
-                   % (len(found["doubles"]), " is" if len(found["doubles"]) == 1
-                      else "s are"))
+    for e in plan.get("episodes") or []:
+        if int(e.get("span") or 1) > 1 and e.get("episode") is not None:
+            out.append("Title %d runs two episodes long, so it is filed as one "
+                       "two-episode file (E%02d-E%02d), which Plex and Jellyfin read as "
+                       "both." % (e["title_index"], int(e["episode"]),
+                                                   int(e["episode_last"])))
     if plan.get("season") is None:
         out.append("No season number — the disc label didn't say. Set it before this "
                    "runs or the files land without one.")

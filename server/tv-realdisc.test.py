@@ -274,6 +274,35 @@ check("named in order",
       ["Book Two: Earth - Chapter One: The Avatar State",
        "Book Two: Earth - Chapter Eight: The Chase"])
 
+# ── Avatar Book Two: Earth, disc 2 (Blu-ray, 2026-10-13) ─────────────────────
+
+print("")
+print("Avatar Book Two disc 2: two episodes welded into one stream, mid-season")
+b2d2, _ = load("avatar-book2-disc2-bluray.info.txt", "tvmaze-555-avatar-the-last-airbender.json")
+check("season 2, disc 2", tv.season_from_label(b2d2[0]["disc_name"]), (2, 2))
+f_d2 = tv.analyse(b2d2, MAKEMKV_MIN)
+# Segment 1088 is "The Serpent's Pass" and "The Drill" as one 45-minute stream, in the
+# middle of the play-all. It can't be split without remuxing, so it is a double.
+check("seven titles in play-all order, the 46-minute one fourth",
+      [t["source"] for t in f_d2["episodes"]],
+      ["00601.mpls", "00602.mpls", "00603.mpls", "00604.mpls",
+       "00605.mpls", "00606.mpls", "00607.mpls"])
+check("trusted", (f_d2["order_source"], f_d2["confidence"]), ("segments", "high"))
+check("the commentary-only copy of episode 14 is a duplicate",
+      "00250.mpls" in [t["source"] for t in f_d2["duplicates"]], True)
+plan_d2 = tv.build_plan(f_d2, season=2, first_episode=9,
+                        series={"id": 555, "name": "Avatar: The Last Airbender",
+                                "year": "2005"}, episode_list=eps)
+check("numbered E09-E16 with the double as E12-E13",
+      [(r["episode"], r["episode_last"]) for r in plan_d2["episodes"]],
+      [(9, 9), (10, 10), (11, 11), (12, 13), (14, 14), (15, 15), (16, 16)])
+check("the double carries both names",
+      plan_d2["episodes"][3]["episode_title"],
+      "Book Two: Earth - Chapter Twelve: The Serpent's Pass + "
+      "Book Two: Earth - Chapter Thirteen: The Drill")
+check("and the warning says which episodes it holds",
+      any("(E12-E13)" in w for w in tv.plan_warnings(plan_d2, f_d2, eps)), True)
+
 # ── the second witness: Wikidata, as it answered on 2026-10-13 ───────────────
 
 print("")
@@ -306,6 +335,8 @@ check("Avatar: the two sources agree on all eight names",
 v_b2 = tv.cross_check(plan_b2["episodes"], eps, WD.parse_episode_titles(wd["avatar_s2"]))
 check("and on Book Two's first eight",
       (v_b2["verdict"], v_b2["agree"]), ("agree", 8))
+v_d2 = tv.cross_check(plan_d2["episodes"], eps, WD.parse_episode_titles(wd["avatar_s2"]))
+check("and on disc 2's seven files", (v_d2["verdict"], v_d2["agree"]), ("agree", 7))
 
 sj_titles = WD.parse_episode_titles(wd["samurai_jack_s1"])
 sj_titles_by_n = dict(sj_titles)
