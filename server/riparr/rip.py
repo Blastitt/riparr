@@ -3061,6 +3061,10 @@ def _finish(job, s, transport, name, local_path, sent_from_card=False):
     if not sent_from_card:
         P.eject()
     log.info("Job %d finished: %s", job["id"], transport.describe(name))
+    try:
+        sweep_incoming()
+    except Exception as e:
+        log.warning("Couldn't sweep the incoming folders: %s", e)
     what = ("Backed up, menus and all, and verified" if job.get("output") == BACKUP
             else "Saved as a disc image and verified" if job.get("output") == ISO
             else "Ripped and verified")
@@ -3175,6 +3179,7 @@ def _finish_season(job, s, transport, folder, base, sent_from_card=False):
     log.info("Job %d finished: %d episodes into %s", job["id"], len(rows), folder)
     try:
         _settle_held()
+        sweep_incoming()
     except Exception as e:                  # never let a neighbour fail this job
         log.warning("Couldn't re-check held seasons: %s", e)
     notify.send("done", title=plan.get("series") or job.get("title") or "A disc",
@@ -4601,9 +4606,56 @@ def _send_one(job):
         _cancel.pop(job["id"], None)
 
 
+def sweep_incoming():
+    """Clear `.riparr-incoming/job-N` folders that nothing will ever come back for.
+
+    A box that froze mid-write leaves the file it was writing on the share, and the NAS
+    keeps it open for a connection that died with the box -- so the cleanup at the time
+    fails ("Input/output error") and nothing ever tries again. Found twice on 2026-10-13:
+    5 GB half-episodes sitting in the hidden folder long after their seasons were filed.
+    Run at start-up and after every finished job; whatever still refuses is tried again
+    next time.
+
+    Only the share's incoming folder: the card's copies are kept on purpose (D6). And
+    only folders whose job is finished with (done, cancelled), superseded by another job
+    that carried it on, or unknown -- never a failed season's read episodes that are
+    waiting for the disc to go back in, and never anything in flight.
+    """
+    removed = 0
+    for kind in db.KINDS:
+        base = os.path.join(_library_root(kind), ".riparr-incoming")
+        try:
+            names = os.listdir(base)
+        except OSError:
+            continue                         # not mounted, or nothing there
+        for name in names:
+            m = re.match(r"^job-(\d+)$", name)
+            if not m:
+                continue
+            job = db.get_job(int(m.group(1)))
+            if job and job["state"] not in ("done", "cancelled", "failed"):
+                continue
+            if job and job["state"] == "failed" and "Carried on by job" not in (
+                    job.get("error") or ""):
+                plan = db.episode_plan(job)
+                if any(r.get("state") == "ripped" and r.get("path")
+                       and os.path.exists(r["path"]) for r in season_rows(plan)):
+                    continue                 # kept for the disc going back in
+            path = os.path.join(base, name)
+            shutil.rmtree(path, ignore_errors=True)
+            if not os.path.exists(path):
+                removed += 1
+                log.info("Cleared leftover %s", path)
+    return removed
+
+
 def start():
     os.makedirs(STAGING, exist_ok=True)
     recover()
+    try:
+        sweep_incoming()
+    except Exception as e:
+        log.warning("Couldn't sweep the incoming folders: %s", e)
     threading.Thread(target=_loop, name="riparr-rip", daemon=True).start()
     threading.Thread(target=_send_loop, name="riparr-send", daemon=True).start()
     threading.Thread(target=_watch_discs, name="riparr-disc-watch", daemon=True).start()

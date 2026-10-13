@@ -269,6 +269,39 @@ check("the rest read", (got[:2 * rip.SECTOR], got[3 * rip.SECTOR:]),
 check("and the bad one is zeros", got[2 * rip.SECTOR:3 * rip.SECTOR],
       b"\0" * rip.SECTOR)
 
+print("leftovers in the share's incoming folder are swept, kept episodes are not")
+fresh_share()
+inc = os.path.join(os.environ["RIPARR_LIBRARY_MOUNT"], ".riparr-incoming")
+
+
+def leftover(job_id, state, error=None, plan=None):
+    d = os.path.join(inc, "job-%d" % job_id, "ep-01")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, "x.mkv")
+    open(path, "wb").write(b"\0" * 1024)
+    if state:
+        db.conn().execute("INSERT OR REPLACE INTO jobs(id, state, error, episode_plan, "
+                          "kind) VALUES (?,?,?,?,'tv')", (job_id, state, error, plan))
+        db.conn().commit()
+    return os.path.dirname(d), path
+
+
+done_dir, _ = leftover(901, "done")
+gone_dir, _ = leftover(902, "failed", "Box stopped. (Carried on by job 903.)")
+unknown_dir, _ = leftover(904, None)
+keep_dir, keep_file = leftover(905, "failed", "The box stopped partway through.")
+import json  # noqa: E402
+db.conn().execute("UPDATE jobs SET episode_plan=? WHERE id=905", (json.dumps(
+    {"episodes": [{"title_index": 0, "state": "ripped", "path": keep_file,
+                   "include": True}]}),))
+busy_dir, _ = leftover(906, "ripping")
+db.conn().commit()
+rip.sweep_incoming()
+check("finished, superseded and unknown jobs' folders go",
+      [os.path.exists(p) for p in (done_dir, gone_dir, unknown_dir)], [False] * 3)
+check("a failed season's kept episodes stay, and so does anything in flight",
+      [os.path.exists(p) for p in (keep_dir, busy_dir)], [True, True])
+
 print("")
 if failures:
     print("%d FAILED: %s" % (len(failures), ", ".join(failures)))
