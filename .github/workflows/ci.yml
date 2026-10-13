@@ -199,6 +199,12 @@ jobs:
       - name: Each kind of disc does what its Auto Rip row says
         run: python server/autorip-kinds.test.py
 
+      # The thermal guard against a fake /sys, under the runner's dash -- the shell the
+      # box runs it with: steps down hot, up cool, rip ceiling and two cores only while
+      # ripping, and the floor even with the setting off.
+      - name: The box keeps itself cool
+        run: python packaging/thermal.test.py
+
       # Music CDs, through the real tools: cd-paranoia reading a synthesized disc image,
       # cd-info reading its CD-Text, flac and lame encoding, bsdtar copying a data CD.
       # Nothing here had a CD drive when it was written, so the tools themselves are the

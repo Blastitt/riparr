@@ -2199,6 +2199,7 @@ def _rip_film_extras(job, s, out_dir, cancel_ev):
         if cancel_ev.is_set():
             raise Cancelled()
         where = "Extra %d of %d" % (n, len(extras))
+        _cool_down(job, s, cancel_ev, where)
         db.update_job(job["id"], phase=where)
         x_dir = os.path.join(out_dir, "extras", "t%02d" % int(x["index"]))
         os.makedirs(x_dir, exist_ok=True)
@@ -2491,6 +2492,7 @@ def _rip_season(job, s, cancel_ev):
                 saved[0] = True
                 db.stage_start(job["id"], "save")
 
+        _cool_down(job, s, cancel_ev, where)
         db.update_job(job["id"], phase=where)
         path, err = None, None
         for attempt in range(3):
@@ -2545,6 +2547,38 @@ def _rip_season(job, s, cancel_ev):
     if all(r.get("state") == "failed" for r in rows):
         raise RipFailed(rows[0].get("error") or "Nothing on this disc could be read.")
     return base
+
+
+COOL_HOT, COOL_RESUME, COOL_MAX_WAIT = 85.0, 78.0, 600
+
+
+def _cool_down(job, s, cancel_ev, where):
+    """Before reading the next title, let a hot box cool off.
+
+    The third part of "Keep the box cool" (packaging/thermal.sh has the other two). On
+    the Orange Pi Zero 2W a rip holds the board near 90 C with nothing throttling it,
+    and when ripping stopped it fell from 88 to 79 C in about ninety seconds -- so a
+    pause in the gap between two episodes, only when it is actually hot, keeps it out
+    of the range where its Wi-Fi chip failed twice in a night. Capped, so a box in a hot
+    room still finishes; cancellable like everything else.
+    """
+    if not s.get("cool_running", True):
+        return
+    t = P.board_temp()
+    if t is None or t < COOL_HOT:
+        return
+    started = time.time()
+    log.info("Job %d: %.0f C before %s; pausing to cool down.", job["id"], t, where)
+    while t is not None and t > COOL_RESUME and time.time() - started < COOL_MAX_WAIT:
+        if cancel_ev.is_set():
+            raise Cancelled()
+        db.update_job(job["id"], phase="%s \u2014 letting the box cool down (%d \u00b0C)"
+                      % (where, round(t)), eta_seconds=None)
+        time.sleep(0.05 if P.MOCK else 5)
+        t = P.board_temp()
+    log.info("Job %d: cooled to %s C in %d s; carrying on.", job["id"],
+             "?" if t is None else "%.0f" % t, time.time() - started)
+    db.update_job(job["id"], phase=where)
 
 
 def _card_has_room(need):

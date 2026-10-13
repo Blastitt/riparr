@@ -269,6 +269,51 @@ check("the rest read", (got[:2 * rip.SECTOR], got[3 * rip.SECTOR:]),
 check("and the bad one is zeros", got[2 * rip.SECTOR:3 * rip.SECTOR],
       b"\0" * rip.SECTOR)
 
+print("a hot box pauses between episodes until it has cooled")
+os.environ["RIPARR_MOCK_CONTENT"] = "tv"
+os.environ["RIPARR_MOCK_DISC"] = "bluray"
+fresh_share()
+db.set("transfer_mode", "direct")
+readings = iter([90, 88, 84, 80, 77] + [60] * 200)   # hot before episode 1, then cool
+real_temp = P.board_temp
+P.board_temp = lambda: next(readings)
+phases = []
+real_update = db.update_job
+
+
+def watching(job_id, **f):
+    if "cool down" in (f.get("phase") or ""):
+        phases.append(f["phase"])
+    return real_update(job_id, **f)
+
+
+db.update_job = watching
+cd = run(new_job("HOT_BOX_S01_D01"))
+db.update_job = real_update
+check("the season still finished", cd["state"], "done")
+check("it waited, and said why", len(phases) >= 3, True)
+contains("on the progress line", phases[0] if phases else "", "letting the box cool down (90")
+print("...not when the setting is off")
+db.set("cool_running", False)
+readings = iter([95] * 500)
+phases.clear()
+db.update_job = watching
+off = run(new_job("HOT_BOX_S01_D02"))
+db.update_job = real_update
+check("no pauses", (off["state"], phases), ("done", []))
+db.set("cool_running", True)
+print("...and a cancel during the wait cancels")
+readings = iter([95] * 500)
+ev = threading.Event()
+ev.set()
+try:
+    rip._cool_down({"id": cd["id"]}, rip._settings(), ev, "Episode 1 of 6")
+    check("cancelled", "no", "yes")
+except rip.Cancelled:
+    check("cancelled", "yes", "yes")
+P.board_temp = real_temp
+db.set("transfer_mode", "burst")
+
 print("leftovers in the share's incoming folder are swept, kept episodes are not")
 fresh_share()
 inc = os.path.join(os.environ["RIPARR_LIBRARY_MOUNT"], ".riparr-incoming")

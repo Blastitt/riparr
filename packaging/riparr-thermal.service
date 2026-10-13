@@ -1,0 +1,19 @@
+[Unit]
+Description=Riparr thermal guard — keep the box cool where the kernel doesn't
+Documentation=https://github.com/jackharvest/riparr
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/riparr/thermal.sh
+Restart=always
+RestartSec=10
+
+# Not sandboxed like riparr.service: it writes cpufreq limits and CPU hotplug in
+# /sys, which ProtectSystem/ProtectKernelTunables would let "succeed" privately and
+# change nothing -- the namespaced-mounts lesson in JOURNAL.md, again.
+ProtectHome=yes
+Nice=10
+CPUWeight=20
+
+[Install]
+WantedBy=multi-user.target

@@ -6,6 +6,7 @@ whole app runs on a laptop with realistic fake data and runs unchanged on the Pi
 `IS_APPLIANCE` is the only switch.
 """
 import datetime
+import glob
 import hashlib
 import json
 import os
@@ -49,6 +50,34 @@ def hostname():
 
 # ─────────────────────────────── system ───────────────────────────────
 
+def board_temp():
+    """The hottest thermal zone, in degrees C, or None if the board reports none.
+
+    The hottest rather than zone 0: what matters for keeping a box alive is the worst
+    part of it, and on the Orange Pi every zone reads within a degree anyway.
+    """
+    if MOCK:
+        v = os.environ.get("RIPARR_MOCK_TEMP")
+        return float(v) if v else None
+    best = None
+    for z in glob.glob("/sys/class/thermal/thermal_zone*/temp"):
+        raw = _read(z).strip()
+        if raw.lstrip("-").isdigit():
+            c = int(raw) / 1000.0
+            best = c if best is None or c > best else best
+    return best
+
+
+def thermal_status():
+    """What riparr-thermal (packaging/thermal.sh) is doing right now, or {}."""
+    try:
+        with open("/run/riparr-thermal.json") as f:
+            out = json.load(f)
+        return out if time.time() - (out.get("at") or 0) < 60 else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def system_status():
     if MOCK:
         return {
@@ -86,6 +115,7 @@ def system_status():
         "memory_total_mb": total,
         "memory_used_mb": total - avail,
         "cpu_temp_c": float(m.group(1)) if m else None,
+        "thermal": thermal_status(),
         # No vcgencmd means no throttle telemetry, which is not the same as throttled.
         "throttled": ("0x0" not in thr) if thr else False,
         # The board the Preparer prepared this card for, recorded in riparr.conf and

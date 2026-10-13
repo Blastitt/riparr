@@ -159,6 +159,10 @@ ADDED_COLUMNS = {
 DEFAULTS = {
     "setup_complete": False,
     "auto_rip": False,
+    # Keep the box cool while ripping: CPU ceiling and two cores during a rip
+    # (packaging/thermal.sh), and a pause between titles when it is hot (rip._cool_down).
+    # The thermal floor in thermal.sh runs whatever this says.
+    "cool_running": True,
     # What Auto Rip does with each kind of disc once it knows what it is: "rip" it,
     # "show" the plan first, or "ignore" it (eject). Pressing Rip always rips. Data is
     # anything that is none of the others -- a game disc, a disc of files.

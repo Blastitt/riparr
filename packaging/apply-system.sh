@@ -34,11 +34,15 @@ install -d -m 0755 "$LIB"
 # Every root-side helper the one-way doors call. Listed rather than globbed so a stray
 # file in packaging/ cannot become a privileged script by being dropped there.
 netwatch_changed=0
+thermal_changed=0
 for s in wifi-apply.sh usbhost-fix.sh makemkv-run.sh netwatch.sh dvdtools-install.sh \
-         cdtools-install.sh; do
+         cdtools-install.sh thermal.sh; do
     [ -f "$PKG/$s" ] || continue
     if [ "$s" = netwatch.sh ] && ! cmp -s "$PKG/$s" "$LIB/$s"; then
         netwatch_changed=1
+    fi
+    if [ "$s" = thermal.sh ] && ! cmp -s "$PKG/$s" "$LIB/$s"; then
+        thermal_changed=1
     fi
     install -o root -g root -m 0755 "$PKG/$s" "$LIB/$s"
 done
@@ -92,6 +96,7 @@ for u in riparr.service \
          riparr-usbhost.service riparr-usbhost.path \
          riparr-wifi.service riparr-wifi.path \
          riparr-netwatch.service \
+         riparr-thermal.service \
          riparr-provision.service riparr-provision.path \
          riparr-restart.service riparr-restart.path \
          riparr-remount.service riparr-remount.path \
@@ -141,6 +146,19 @@ if [ -f /etc/systemd/system/riparr-netwatch.service ]; then
         say "Wi-Fi watchdog restarted with the new version"
     else
         say "Wi-Fi watchdog already running (left alone)"
+    fi
+fi
+
+# The thermal guard: unlike the Wi-Fi watchdog it has no escalation to lose, so a new
+# version simply replaces the old one.
+if [ -f /etc/systemd/system/riparr-thermal.service ]; then
+    systemctl enable --quiet riparr-thermal.service 2>/dev/null || true
+    if [ "$thermal_changed" = 1 ] && systemctl is-active --quiet riparr-thermal.service; then
+        systemctl restart riparr-thermal.service 2>/dev/null || true
+        say "Thermal guard restarted with the new version"
+    elif ! systemctl is-active --quiet riparr-thermal.service; then
+        systemctl start riparr-thermal.service 2>/dev/null || true
+        say "Thermal guard started"
     fi
 fi
 

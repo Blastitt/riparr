@@ -2250,6 +2250,13 @@ settingsPages.ripping = async (s) => {
   </div></div>
 
   <div class="section"><h2>Transfer</h2><div>
+    ${sw("cool_running", "Keep the box cool while ripping", s.cool_running !== false,
+        "Small boards run hot when ripping, and some (the Orange Pi Zero 2W among them) "
+        + "never slow themselves down. While a disc is being read, this holds the CPU "
+        + "at a lower speed on two cores — which doesn't slow a rip, because the drive "
+        + "and the network are the limit — and pauses between episodes if the box gets "
+        + "above 85 °C, until it's back under 78 °C. Riparr steps the CPU down above "
+        + "85 °C whatever this says.")}
     <label class="f"><span>Mode</span>
       <select data-set="transfer_mode">
         ${opt("direct", "Straight to your library (recommended)", s.transfer_mode)}
@@ -3087,7 +3094,9 @@ systemPages.status = async () => {
         <div class="k">Kernel</div><div class="v">${esc(sys.kernel || "—")}</div>
         <div class="k">Mode</div><div class="v">${sys.mock ? "Development (simulated)" : "Appliance"}</div>
         <div class="k">Memory</div><div class="v">${sys.memory_used_mb} of ${sys.memory_total_mb} MB</div>
-        <div class="k">Temperature</div><div class="v">${sys.cpu_temp_c ?? "—"} °C
+        <div class="k">Temperature</div><div class="v">${sys.cpu_temp_c ?? "—"} °C${
+          (sys.thermal || {}).state && sys.thermal.state !== "normal"
+            ? ` <span class="muted">— ${esc(sys.thermal.state)}, CPU at ${sys.thermal.max_mhz} MHz</span>` : ""}
           ${sys.throttled ? '<span class="badge warn">throttled</span>' : ""}</div>
         <div class="k">Uptime</div><div class="v">${uptime(sys.uptime_seconds)}</div>
       </div>
