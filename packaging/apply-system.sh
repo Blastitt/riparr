@@ -161,4 +161,44 @@ if [ -f /etc/systemd/system/riparr-cdtools.path ] && [ -d /run/riparr ]; then
     done
 fi
 
+# ── the hardware watchdog ──
+# A box that freezes outright stays frozen until somebody pulls the plug -- found
+# 2026-10-12, when the Orange Pi's Wi-Fi chip hung mid-rip and took the kernel with it:
+# no network, no log after the hang, and nothing on the board was going to notice. Every
+# supported board has a hardware watchdog; with systemd feeding it, a frozen box reboots
+# itself within seconds and the interrupted rip carries on when the disc goes back in.
+# 15 s is the longest both the Allwinner and the Broadcom watchdogs accept.
+if [ -e /dev/watchdog ] || [ -e /dev/watchdog0 ]; then
+    want='[Manager]
+RuntimeWatchdogSec=15s
+RebootWatchdogSec=10min'
+    conf=/etc/systemd/system.conf.d/riparr-watchdog.conf
+    if [ "$(cat "$conf" 2>/dev/null)" != "$want" ]; then
+        mkdir -p /etc/systemd/system.conf.d
+        printf '%s\n' "$want" > "$conf"
+        systemctl daemon-reexec
+        say "Hardware watchdog on: a frozen box reboots itself"
+    fi
+fi
+
+# ── Bluetooth off on the Orange Pi's AW859A ──
+# Riparr never uses Bluetooth, and on this chip it shares the radio with Wi-Fi. When the
+# Wi-Fi firmware hung, the driver's own recovery tried to power-cycle the chip and was
+# refused -- "can not power off, other module is on" -- because Bluetooth was holding it,
+# so Wi-Fi never came back. Only the part of the vendor unit that starts Bluetooth is
+# replaced: its other two steps (loading sunxi_addr, unblocking the radios) are ones
+# the Wi-Fi side relies on too, and stay.
+if systemctl cat aw859a-bluetooth.service >/dev/null 2>&1; then
+    want='[Service]
+ExecStart=
+ExecStart=/bin/true'
+    conf=/etc/systemd/system/aw859a-bluetooth.service.d/riparr-no-bluetooth.conf
+    if [ "$(cat "$conf" 2>/dev/null)" != "$want" ]; then
+        mkdir -p "$(dirname "$conf")"
+        printf '%s\n' "$want" > "$conf"
+        systemctl daemon-reload
+        say "Bluetooth will stay off from the next boot (it blocked Wi-Fi recovery)"
+    fi
+fi
+
 say "System units are up to date"

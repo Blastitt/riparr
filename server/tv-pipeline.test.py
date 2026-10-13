@@ -489,6 +489,43 @@ check("all six in the library, under the first attempt's numbers", share_files()
 rip._mock_rip_episode = _real_mock_rip
 db.set("transfer_mode", "burst")
 
+print("a box that dies mid-season keeps what it read, and carries on")
+# 2026-10-12: the Wi-Fi chip froze the kernel seven episodes into a disc. Recovery on
+# the next boot used to delete those seven.
+fresh_share()
+db.set("transfer_mode", "direct")
+cut = new_job("POWER_CUT_S01_D01")
+os.environ["RIPARR_MOCK_LABEL"] = "POWER_CUT_S01_D01"
+cj = rip._identify(cut, rip._settings())
+stop_after = {"n": 0}
+
+
+def dies_after_three(job, out_dir, cancel_ev, row, progress, first_byte):
+    stop_after["n"] += 1
+    if stop_after["n"] > 3:
+        raise KeyboardInterrupt          # the power goes
+    return _real_mock_rip(job, out_dir, cancel_ev, row, progress, first_byte)
+
+
+rip._mock_rip_episode = dies_after_three
+try:
+    rip._rip_season(cj, rip._settings(), threading.Event())
+except KeyboardInterrupt:
+    pass
+rip._mock_rip_episode = _real_mock_rip
+rip.recover()
+dead = db.get_job(cj["id"])
+check("marked failed", dead["state"], "failed")
+contains("saying what it kept", dead["error"], "The 3 episodes it had read are kept")
+read.clear()
+rip._mock_rip_episode = counting
+back = run(new_job("POWER_CUT_S01_D01"))
+rip._mock_rip_episode = _real_mock_rip
+check("the disc going back in finishes it", back["state"], "done")
+check("reading only the three it hadn't", len(read), 3)
+check("six episodes filed", len([f for f in share_files() if "Power Cut" in f]), 6)
+db.set("transfer_mode", "burst")
+
 # ── interrupted, then resumed ────────────────────────────────────────────────
 
 print("a season interrupted mid-transfer resumes where it stopped")

@@ -4288,6 +4288,24 @@ def recover():
                           bytes_sent=0, bytes_verified=0,
                           attempts=(job.get("attempts") or 0) + 1)
             continue
+        plan = db.episode_plan(job)
+        read = [r for r in season_rows(plan) if r.get("state") in ("ripped", "done")
+                and (r.get("state") == "done"
+                     or (r.get("path") and os.path.exists(r["path"])))]
+        if job.get("kind") == "tv" and read:
+            # A season keeps what it had read. Found 2026-10-12: the box froze seven
+            # episodes into a thirteen-episode disc, and this used to delete the seven
+            # (it only failed to because the share was not mounted yet). Kept, a
+            # re-insert reads the other six -- `_resume_partial`.
+            left = [r for r in season_rows(plan) if r not in read]
+            log.info("Job %d was interrupted mid-season; keeping %d read episodes.",
+                     job["id"], len(read))
+            db.update_job(
+                job["id"], state="failed", phase=None, finished_at=int(time.time()),
+                error="The box stopped partway through. The %d episode%s it had read "
+                      "are kept — put the disc back in and Riparr reads the other %d."
+                      % (len(read), "" if len(read) == 1 else "s", len(left)))
+            continue
         log.info("Job %d was interrupted mid-rip and can't be resumed.", job["id"])
         db.update_job(
             job["id"], state="failed", phase=None, finished_at=int(time.time()),
