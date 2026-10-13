@@ -171,6 +171,26 @@ d2 = run_all(new_job("SOME_SHOW_S05_D02"))
 check("and so does the second", d2["state"], "done")
 check("carrying on from seven", db.episode_plan(d2)["episodes"][0]["episode"], 7)
 
+print("a season on DVD is ripped, then held for a person, every disc")
+# No real DVD season has been through the planner, and a DVD has no segment map. So the
+# default trusts it as far as the rip, and no further.
+fresh_share()
+os.environ["RIPARR_MOCK_DISC"] = "dvd"
+v1 = run_all(new_job("DVD_SHOW_S01_D01"))
+check("read and ejected, waiting to be named", (v1["state"], bool(v1["local_path"])),
+      ("needs_input", True))
+check("held because it is a DVD", db.episode_plan(v1)["hold"]["reason"], "dvd")
+contains("and saying why", v1["question"], "on DVD")
+check("nothing in the library yet", share_files(), [])
+ok, _msg = rip.answer(v1["id"])
+check("an empty answer accepts it", ok, True)
+check("and it is filed", (send(v1["id"])["state"], len(share_files())), ("done", 6))
+db.set("on_season_disc", "auto")
+v2 = run_all(new_job("DVD_SHOW_S01_D02"))
+check("\"Never\" still means never, even on DVD", v2["state"], "done")
+db.set("on_season_disc", "unsure")
+os.environ.pop("RIPARR_MOCK_DISC")
+
 # Names on, through stand-ins for TVmaze. What settles broadcast order is TVmaze's
 # DVD-release list: none (an empty answer) means disc order is aired order.
 _real = (rip.tv.search_series, rip.tv.episodes, rip.tv.dvd_order)

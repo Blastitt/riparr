@@ -1737,11 +1737,17 @@ def _identify_season(job, s, d, titles, remembered):
         behaviour = "unsure"
     # A guessed starting number always asks, like a missing season does: under "auto"
     # it would file a third of a season under the wrong numbers, with confidence.
+    # TV on DVD is held for a person too, every disc. A DVD has no segment map, so the
+    # order comes from weaker evidence, and no real DVD season has been through this
+    # planner: the Blu-ray path needed a fix on nearly every real disc before it could
+    # be trusted, and the DVD path has only met discs built from the same assumptions as
+    # the code. Holding costs no drive time -- the disc is ripped and ejected first.
+    on_dvd = disc_family(d) == "dvd"
     ask = (season is None
            or guessed
            or behaviour == "ask"
            or (behaviour == "unsure"
-               and (found["confidence"] != "high" or unsettled or doubted)))
+               and (found["confidence"] != "high" or unsettled or doubted or on_dvd)))
 
     db.update_job(job["id"], kind="tv", titles=titles, episode_plan=plan,
                   season=season, series_id=(series or {}).get("id"),
@@ -1759,7 +1765,7 @@ def _identify_season(job, s, d, titles, remembered):
         n = len(plan["episodes"])
         plan["hold"] = {
             "reason": ("season" if season is None else "guessed" if guessed
-                       else "witness" if doubted else "order"),
+                       else "witness" if doubted else "dvd" if on_dvd else "order"),
             "question": (
                 "Ripped and ejected, but nothing on the disc says which season this "
                 "is. Set it and Riparr files the %d episode%s." % (n, "" if n == 1 else "s")
@@ -1769,6 +1775,9 @@ def _identify_season(job, s, d, titles, remembered):
                 "now." % (disc_no - 1) if guessed else
                 "Ripped and ejected. TVmaze and Wikidata disagree about this disc — "
                 "check it and Riparr files it." if doubted else
+                "Ripped and ejected. Seasons on DVD are always checked by a person: a "
+                "DVD doesn't record its episode order the way a Blu-ray does. Check the "
+                "order and Riparr files them." if on_dvd else
                 "Ripped and ejected. Check the episode order and Riparr files them."),
         }
         db.update_job(job["id"], episode_plan=plan)

@@ -146,6 +146,12 @@ out, such as a label with no season number or disc 3 arriving before disc 2, the
 ripped and ejected anyway, and only the filing waits. Disc 3 files itself as soon as
 disc 2 is done.
 
+**Seasons on DVD wait for you, every disc.** A DVD doesn't keep a "play all" record the
+way a Blu-ray does, so its episode order is a good guess rather than a fact. Riparr still
+rips and ejects the disc straight away, then asks you to check the order on the Queue
+page before it files anything. Set **When Riparr isn't sure about a season** to *Never*
+to have DVDs filed without asking.
+
 The names come from [TVmaze](https://www.tvmaze.com), which needs no account.
 
 **Disc order and broadcast order don't always agree.** Firefly is the famous one: the

@@ -2203,7 +2203,8 @@ settingsPages.ripping = async (s) => {
         no season number on the label, an earlier disc of the set not ripped yet, or no
         internet to check the episode guide — the disc is still ripped and ejected, and
         only the filing waits for you. A disc that came in before the one ahead of it
-        files itself once that one is done.
+        files itself once that one is done. Seasons on DVD are always held for you:
+        a DVD doesn't record its episode order the way a Blu-ray does.
         <br><br>Episode order is read off the disc's "play all" list. Whether a show was
         released on disc in a different order from how it aired (Firefly is the famous
         one) is looked up on TVmaze, and the files are named by the episode each one
