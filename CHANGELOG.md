@@ -8,6 +8,57 @@ bother updating.
 
 ---
 
+## 0.7.0
+
+**TV seasons on Blu-ray, tested on real discs.** The first fidelity tests with real
+Blu-ray TV box sets are passing: every season of Samurai Jack and Avatar: The Last
+Airbender's Book One and Book Two. Put a season disc in and each episode comes out as
+its own file, in the order the disc plays them, named and numbered for Plex and
+Jellyfin. Disc 2 carries on where disc 1 stopped. Put disc 3 in before disc 2 and it's
+ripped anyway, then filed by itself as soon as disc 2 is done.
+
+**TV on DVD gets checked by you before it's filed.** DVDs come from an older, more
+archaic way of building disc menus, and they don't keep a reliable record of what order
+the episodes go in. So a DVD season is ripped and ejected as usual, then waits on the
+Queue page for you to confirm the order before anything lands in your library. If you'd
+rather it guessed, set **When Riparr isn't sure about a season** to *Never*.
+
+**Episode names are double-checked.** TVmaze names the episodes and Wikidata checks
+them. When the two agree, the plan says so. When they disagree about the show, or count
+the season differently, the filing waits for you instead of guessing.
+
+**The details a real box set throws at you:**
+
+- Two shows with the same name (the 2005 Avatar and the 2024 one) are told apart by
+  episode length and season count.
+- A disc called "Book One" or "Volume 2" is read as a season, and the disc's own full
+  name is used instead of its 32-character label.
+- Commentary-only copies of an episode are skipped. You get the version with the real
+  soundtrack, and the commentary comes along as an extra track when the disc has one.
+- Two episodes stored as one video are filed as one file, like `S02E12-E13`, carrying
+  both episode names.
+- Bonus episodes and featurettes are offered as extras. Tick them and they go in the
+  show's Featurettes folder.
+- A single episode that fails to rip costs that episode, not the season. Put the disc
+  back in and only what's missing is read.
+
+**Auto Rip by kind of disc.** Settings has a row each for films, TV seasons, music CDs
+and data discs: rip it, show me first, or leave it alone. Films and TV can bring their
+extras along too.
+
+**Data discs are saved as ISO images,** in a Data folder with its own destination.
+
+**The box looks after itself.**
+
+- **Keep the box cool** holds the Orange Pi at a lower clock while it reads a disc. It
+  costs nothing in rip speed and keeps it well clear of its temperature limit. A hot box
+  pauses between episodes to cool down.
+- A frozen box now reboots itself, and takes riparr.local back afterwards instead of
+  turning up as riparr-2.local.
+- On the Orange Pi Zero 2W, Bluetooth is switched off. It shares a chip with the Wi-Fi,
+  and it was taking the Wi-Fi down with it.
+- Half-written files left on your share by a crash are cleaned up.
+
 ## 0.6.1
 
 **Pick your format and quality for music CDs.** Settings → Ripping → Music CDs now offers
