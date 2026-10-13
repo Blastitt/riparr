@@ -221,6 +221,68 @@ check("named in order",
       ["Book One: Water - Chapter One: The Boy in the Iceberg",
        "Book One: Water - Chapter Eight: Avatar Roku (Winter Solstice, Part 2)"])
 
+
+# ── the second witness: Wikidata, as it answered on 2026-10-13 ───────────────
+
+print("")
+print("Wikidata as a second witness")
+from riparr import wikidata as WD  # noqa: E402
+wd = json.load(open(os.path.join(FIX, "wikidata-2026-10-13.json"), encoding="utf-8"))
+facts = WD.parse_series_facts(wd["series_facts"])
+check("it knows both Avatars apart: seasons and years",
+      [(facts[i]["seasons"], facts[i]["year"]) for i in (555, 38753)],
+      [(3, 2005), (2, 2024)])
+check("and Book One's episode count", facts[555]["season_episodes"].get(1), 20)
+# What its own name search found for "Avatar: The Last Airbender" (both shows).
+named_avatar = [{"qid": "Q11572", "label": "Avatar: The Last Airbender", "tvmaze": [555]},
+                {"qid": "Q109608844", "label": "Avatar: The Last Airbender",
+                 "tvmaze": [38753]}]
+check("both witnesses, tied on the name: the episode length decides",
+      tv.pick_series(options, found["episode_seconds"], 1, facts, named_avatar)["id"], 555)
+check("a disc of Book Three can't be the two-season remake, even with no episode length",
+      tv.pick_series(options, None, 3, facts, named_avatar)["id"], 555)
+other = [{"id": 999, "name": "Samurai Jack: The Movie", "score": 2.0, "runtime": 90},
+         {"id": 1603, "name": "Samurai Jack", "score": 1.4, "runtime": 30}]
+check("a name match Wikidata doesn't know as this show is passed over",
+      tv.pick_series(other, 1350, 1, {}, [{"qid": "Q694101", "label": "Samurai Jack",
+                                           "tvmaze": [1603]}])["id"], 1603)
+
+avatar_titles = WD.parse_episode_titles(wd["avatar_s1"])
+verdict = tv.cross_check(plan["episodes"], eps, avatar_titles)
+check("Avatar: the two sources agree on all eight names",
+      (verdict["verdict"], verdict["agree"]), ("agree", 8))
+
+sj_titles = WD.parse_episode_titles(wd["samurai_jack_s1"])
+sj_titles_by_n = dict(sj_titles)
+check("Samurai Jack's own house style is \"Episode I\"", sj_titles_by_n[1], "Episode I")
+sj_titles_eps = json.load(open(os.path.join(FIX, "tvmaze-1603-samurai-jack.json")))
+sj_eps = [{"season": e["season"], "number": e["number"], "name": e.get("name") or "",
+           "special": (e.get("type") or "regular") != "regular"}
+          for e in sj_titles_eps if e.get("season") is not None and e.get("number")]
+sj_rows = [{"episode": n, "season": 1, "include": True,
+            "episode_title": next(e["name"] for e in sj_eps
+                                  if e["season"] == 1 and e["number"] == n)}
+           for n in range(1, 14)]
+v2 = tv.cross_check(sj_rows, sj_eps, sj_titles)
+check("different naming is not disagreement: agreement where both have a name",
+      (v2["verdict"], v2["agree"] >= 1), ("agree", True))
+
+# One source counting a special as episode 2 shifts every name after it by one.
+shifted_eps = [{"season": 1, "number": 1, "name": "The Boy in the Iceberg", "special": False},
+               {"season": 1, "number": 2, "name": "Unaired Pilot", "special": False}] + [
+    {"season": 1, "number": n + 1, "name": avatar_titles[n], "special": False}
+    for n in range(2, 9)]
+shifted_rows = [{"episode": n, "season": 1, "include": True,
+                 "episode_title": next(e["name"] for e in shifted_eps if e["number"] == n)}
+                for n in range(1, 9)]
+v3 = tv.cross_check(shifted_rows, shifted_eps, avatar_titles)
+check("a season the two number differently is caught, and by how much",
+      (v3["verdict"], v3["offset"]), ("shifted", 1))
+blank = [{"episode": 1, "season": 1, "include": True, "episode_title": ""}]
+tv.cross_check(blank, [], avatar_titles)
+check("a name TVmaze lacks is taken from the witness", blank[0]["episode_title"],
+      "The Boy in the Iceberg")
+
 print("")
 if failures:
     print("%d FAILED: %s" % (len(failures), ", ".join(failures)))

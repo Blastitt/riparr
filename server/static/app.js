@@ -1221,6 +1221,21 @@ function seasonPrompt(j) {
           : "could not be read from the disc — this is the order MakeMKV found them in."
         }</span></div>` : ""}
 
+      ${(() => {
+        const w = plan.witness || {};
+        if (w.show === "agree" && w.verdict === "agree")
+          return `<div class="ep-trust"><span class="badge ok">Two sources agree</span>
+            <span class="muted">TVmaze and Wikidata both say this is the show, and agree on
+            ${w.agree} of these episode names.</span></div>`;
+        if (w.show === "agree")
+          return `<div class="ep-trust"><span class="badge ok">Show confirmed</span>
+            <span class="muted">Wikidata, checked separately, finds the same show.</span></div>`;
+        if (w.show === "unavailable" && plan.series_id)
+          return `<div class="ep-trust"><span class="muted">Named from TVmaze alone —
+            Wikidata couldn't be reached to double-check.</span></div>`;
+        return "";
+      })()}
+
       <div class="ep-table" id="ep-rows" data-dvd="${esc(JSON.stringify(plan.dvd_map || {}))}">
         ${rows.map((e, i) => episodeRow(e, i, rows.length)).join("")}
       </div>

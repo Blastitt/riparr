@@ -1,0 +1,1333 @@
+{
+"series_facts": [
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "5"
+},
+"neps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "10"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2004-09-25T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "1"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2004-09-25T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "2"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2004-09-25T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "3"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2004-09-25T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "4"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2004-09-25T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "5"
+},
+"neps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "10"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2001-08-10T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "1"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2001-08-10T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "2"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2001-08-10T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "3"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2001-08-10T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "4"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2001-08-10T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q109608844"
+},
+"n": {
+"type": "literal",
+"value": "1"
+},
+"neps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "8"
+},
+"tvmaze": {
+"type": "literal",
+"value": "38753"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2024-02-22T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "15"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "2"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Avatar: The Last Airbender"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q109608844"
+},
+"n": {
+"type": "literal",
+"value": "2"
+},
+"neps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "7"
+},
+"tvmaze": {
+"type": "literal",
+"value": "38753"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2024-02-22T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "15"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "2"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Avatar: The Last Airbender"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "1"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2004-09-25T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "4"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2004-09-25T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "5"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2004-09-25T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "2"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2004-09-25T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "1"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2001-08-10T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "4"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2001-08-10T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "5"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2001-08-10T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q694101"
+},
+"n": {
+"type": "literal",
+"value": "2"
+},
+"tvmaze": {
+"type": "literal",
+"value": "1603"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2001-08-10T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "62"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "5"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Samurai Jack"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q11572"
+},
+"n": {
+"type": "literal",
+"value": "1"
+},
+"neps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "20"
+},
+"tvmaze": {
+"type": "literal",
+"value": "555"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2005-02-21T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "61"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "3"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Avatar: The Last Airbender"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q11572"
+},
+"n": {
+"type": "literal",
+"value": "2"
+},
+"neps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "20"
+},
+"tvmaze": {
+"type": "literal",
+"value": "555"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2005-02-21T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "61"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "3"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Avatar: The Last Airbender"
+}
+},
+{
+"item": {
+"type": "uri",
+"value": "http://www.wikidata.org/entity/Q11572"
+},
+"n": {
+"type": "literal",
+"value": "3"
+},
+"neps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "21"
+},
+"tvmaze": {
+"type": "literal",
+"value": "555"
+},
+"start": {
+"datatype": "http://www.w3.org/2001/XMLSchema#dateTime",
+"type": "literal",
+"value": "2005-02-21T00:00:00Z"
+},
+"eps": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "61"
+},
+"seasons": {
+"datatype": "http://www.w3.org/2001/XMLSchema#decimal",
+"type": "literal",
+"value": "3"
+},
+"itemLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Avatar: The Last Airbender"
+}
+}
+],
+"avatar_s1": [
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Waterbending Scroll"
+},
+"en": {
+"type": "literal",
+"value": "9"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Jet"
+},
+"en": {
+"type": "literal",
+"value": "10"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Warriors of Kyoshi"
+},
+"en": {
+"type": "literal",
+"value": "4"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Imprisoned"
+},
+"en": {
+"type": "literal",
+"value": "6"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Siege of the North: Part 1"
+},
+"en": {
+"type": "literal",
+"value": "19"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Siege of the North: Part 2"
+},
+"en": {
+"type": "literal",
+"value": "20"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Bato of the Water Tribe"
+},
+"en": {
+"type": "literal",
+"value": "15"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Boy in the Iceberg"
+},
+"en": {
+"type": "literal",
+"value": "1"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Southern Air Temple"
+},
+"en": {
+"type": "literal",
+"value": "3"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Avatar Returns"
+},
+"en": {
+"type": "literal",
+"value": "2"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Winter Solstice, Part 2: Avatar Roku"
+},
+"en": {
+"type": "literal",
+"value": "8"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Great Divide"
+},
+"en": {
+"type": "literal",
+"value": "11"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Blue Spirit"
+},
+"en": {
+"type": "literal",
+"value": "13"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Waterbending Master"
+},
+"en": {
+"type": "literal",
+"value": "18"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Winter Solstice, Part 1: The Spirit World"
+},
+"en": {
+"type": "literal",
+"value": "7"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The King of Omashu"
+},
+"en": {
+"type": "literal",
+"value": "5"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Deserter"
+},
+"en": {
+"type": "literal",
+"value": "16"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Storm"
+},
+"en": {
+"type": "literal",
+"value": "12"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Northern Air Temple"
+},
+"en": {
+"type": "literal",
+"value": "17"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The Fortuneteller"
+},
+"en": {
+"type": "literal",
+"value": "14"
+}
+}
+],
+"samurai_jack_s1": [
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode I"
+},
+"en": {
+"type": "literal",
+"value": "1"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "The First Fight"
+},
+"en": {
+"type": "literal",
+"value": "3"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode II"
+},
+"en": {
+"type": "literal",
+"value": "2"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode V"
+},
+"en": {
+"type": "literal",
+"value": "5"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode IV"
+},
+"en": {
+"type": "literal",
+"value": "4"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode IX"
+},
+"en": {
+"type": "literal",
+"value": "9"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode VIII"
+},
+"en": {
+"type": "literal",
+"value": "8"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XI"
+},
+"en": {
+"type": "literal",
+"value": "11"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode X"
+},
+"en": {
+"type": "literal",
+"value": "10"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode VI"
+},
+"en": {
+"type": "literal",
+"value": "6"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode VII"
+},
+"en": {
+"type": "literal",
+"value": "7"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XIII"
+},
+"en": {
+"type": "literal",
+"value": "13"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XII"
+},
+"en": {
+"type": "literal",
+"value": "12"
+}
+}
+],
+"samurai_jack_s2": [
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XIX"
+},
+"en": {
+"type": "literal",
+"value": "6"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XVI"
+},
+"en": {
+"type": "literal",
+"value": "3"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XXV"
+},
+"en": {
+"type": "literal",
+"value": "12"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XXVI"
+},
+"en": {
+"type": "literal",
+"value": "13"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XXIII"
+},
+"en": {
+"type": "literal",
+"value": "10"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XX"
+},
+"en": {
+"type": "literal",
+"value": "7"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XXIV"
+},
+"en": {
+"type": "literal",
+"value": "11"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XXI"
+},
+"en": {
+"type": "literal",
+"value": "8"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XXII"
+},
+"en": {
+"type": "literal",
+"value": "9"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XV"
+},
+"en": {
+"type": "literal",
+"value": "2"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XVII"
+},
+"en": {
+"type": "literal",
+"value": "4"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XVIII"
+},
+"en": {
+"type": "literal",
+"value": "5"
+}
+},
+{
+"epLabel": {
+"xml:lang": "en",
+"type": "literal",
+"value": "Episode XIV"
+},
+"en": {
+"type": "literal",
+"value": "1"
+}
+}
+]
+}

@@ -38,7 +38,7 @@ import threading
 import time
 
 from . import db, tv, led as LED, notify, platform as P, shares as SH, system as SY
-from . import backup as BK, music as MU
+from . import backup as BK, music as MU, wikidata as WD
 
 log = SY.component("Rip")
 
@@ -1535,6 +1535,7 @@ def _identify_season(job, s, d, titles, remembered):
                    or tv.series_name_from_label(label) or pretty_label(label) or "")
 
     series, episode_list, options = None, [], []
+    facts, switched, wd_named = None, None, None
     if s.get("tv_metadata", True) and series_name:
         options = tv.search_series(series_name)
         if remembered.get("series_id"):
@@ -1542,8 +1543,17 @@ def _identify_season(job, s, d, titles, remembered):
                             if c["id"] == remembered["series_id"]), None)
                       or {"id": remembered["series_id"], "name": series_name})
         elif options:
-            series = tv.pick_series(options, found.get("episode_seconds"))
+            # The second witness, asked about TVmaze's own candidates: one query, and
+            # None (not {}) when Wikidata could not be reached.
+            if not P.MOCK or os.environ.get("RIPARR_WIKIDATA"):
+                wd_named = WD.search_series(series_name)
+                facts = WD.series_facts([o["id"] for o in options[:6]])
+            first = options[0]
+            series = tv.pick_series(options, found.get("episode_seconds"), season, facts,
+                                    wd_named)
             options = [series] + [o for o in options if o is not series]
+            if series is not first:
+                switched = first
         if series:
             episode_list = tv.episodes(series["id"])
 
@@ -1625,6 +1635,54 @@ def _identify_season(job, s, d, titles, remembered):
             "a different order \u2014 if the first episode here isn't what actually "
             "plays first, change \u201cfirst episode\u201d and the whole disc "
             "renumbers."))
+    # Two witnesses. TVmaze named the episodes; Wikidata, asked independently, either
+    # agrees, says nothing, or says the numbering is shifted -- which no amount of
+    # reading the disc can catch, and which is held for a person like any other doubt.
+    witness = {"source": "wikidata", "verdict": "unavailable", "show": "unavailable"}
+    doubted = False
+    if series and wd_named is not None:
+        ids = {i for s in wd_named for i in s.get("tvmaze") or []}
+        witness["show"] = ("agree" if series["id"] in ids else
+                           "unknown" if not ids else "disputed")
+        if witness["show"] == "disputed":
+            doubted = True
+            plan["warnings"].insert(0, (
+                "TVmaze and Wikidata don't agree on which show this is: searching "
+                "Wikidata for \u201c%s\u201d finds %s, not TVmaze's %s. Check the show "
+                "before these are filed." % (
+                    series_name, ", ".join(sorted({s["label"] for s in wd_named}))[:120],
+                    series.get("name"))))
+    if series and episode_list and facts is not None:
+        f = facts.get(series["id"])
+        if f:
+            witness["qid"] = f["qid"]
+            titles = WD.episode_titles(f["qid"], season)
+            if titles is not None:
+                check = tv.cross_check(plan["episodes"], episode_list, titles)
+                witness.update(check)
+                if check["verdict"] == "shifted":
+                    doubted = True
+                    plan["warnings"].insert(0, (
+                        "TVmaze and Wikidata number this season differently -- Wikidata's "
+                        "names sit %d episode%s %s -- usually a special counted as an "
+                        "episode by one of them. Check the numbering before these are "
+                        "filed." % (
+                            abs(check["offset"]), "" if abs(check["offset"]) == 1 else "s",
+                            "later" if check["offset"] > 0 else "earlier")))
+        else:
+            witness["verdict"] = "unknown"
+        if switched is not None:
+            plan["warnings"].insert(0, (
+                "TVmaze's first match was %s%s, but the episode length%s point%s to %s%s."
+                % (switched.get("name"), " (%s)" % switched["year"]
+                   if switched.get("year") else "",
+                   " and Wikidata's season count" if facts else "", "" if facts else "s",
+                   series.get("name"), " (%s)" % series["year"]
+                   if series.get("year") else "")))
+    elif series and episode_list:
+        witness["verdict"] = "unavailable"
+        log.info("Job %d: Wikidata unreachable; naming from TVmaze alone.", job["id"])
+    plan["witness"] = witness
     plan["series_options"] = options
     # Offered, unticked. Most people want the episodes and nothing else; the ones who
     # want the featurettes want them filed where Plex and Jellyfin will show them.
@@ -1674,7 +1732,7 @@ def _identify_season(job, s, d, titles, remembered):
            or guessed
            or behaviour == "ask"
            or (behaviour == "unsure"
-               and (found["confidence"] != "high" or unsettled)))
+               and (found["confidence"] != "high" or unsettled or doubted)))
 
     db.update_job(job["id"], kind="tv", titles=titles, episode_plan=plan,
                   season=season, series_id=(series or {}).get("id"),
@@ -1692,7 +1750,7 @@ def _identify_season(job, s, d, titles, remembered):
         n = len(plan["episodes"])
         plan["hold"] = {
             "reason": ("season" if season is None else "guessed" if guessed
-                       else "order"),
+                       else "witness" if doubted else "order"),
             "question": (
                 "Ripped and ejected, but nothing on the disc says which season this "
                 "is. Set it and Riparr files the %d episode%s." % (n, "" if n == 1 else "s")
@@ -1700,6 +1758,8 @@ def _identify_season(job, s, d, titles, remembered):
                 "Ripped and ejected. Riparr is waiting for disc %d to be ripped to know "
                 "where these episodes start — or check the numbering and it files them "
                 "now." % (disc_no - 1) if guessed else
+                "Ripped and ejected. TVmaze and Wikidata disagree about this disc — "
+                "check it and Riparr files it." if doubted else
                 "Ripped and ejected. Check the episode order and Riparr files them."),
         }
         db.update_job(job["id"], episode_plan=plan)

@@ -791,7 +791,7 @@ def search_series(name, limit=6):
     return out
 
 
-def pick_series(options, episode_seconds=None):
+def pick_series(options, episode_seconds=None, season=None, facts=None, named=None):
     """The best of TVmaze's candidates for a disc, or None.
 
     TVmaze's score is a text match, and two shows with the same name score the same:
@@ -802,6 +802,20 @@ def pick_series(options, episode_seconds=None):
     """
     if not options:
         return None
+    # The second witness first. What Wikidata finds by the same name, on its own: when
+    # some of TVmaze's candidates are among those shows, the others are not this one.
+    if named:
+        ids = {i for s in named for i in s.get("tvmaze") or []}
+        both = [o for o in options if o["id"] in ids]
+        options = both or options
+    # A show Wikidata says has fewer seasons than the disc's
+    # season number is not this show, however well its name matched. Only ever used to
+    # rule out -- if it would rule out everything, it is the witness that is wrong.
+    if facts and season:
+        possible = [o for o in options
+                    if not (facts.get(o["id"]) or {}).get("seasons")
+                    or facts[o["id"]]["seasons"] >= season]
+        options = possible or options
     best = options[0].get("score") or 0
     close = [o for o in options if (o.get("score") or 0) >= best - 0.05]
     if len(close) < 2 or not episode_seconds:
@@ -812,6 +826,76 @@ def pick_series(options, episode_seconds=None):
         rt = o.get("runtime") or 0
         return abs(rt - minutes) / minutes if rt else 9e9
     return min(close, key=miss)
+
+
+def _norm_title(s):
+    s = re.sub(r"\(\s*(?:part\s*)?\d+\s*\)", " ", (s or "").lower())
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return " ".join(s.split())
+
+
+def _same_title(a, b):
+    """Whether two sources' names for an episode are the same name. Containment either
+    way, because one source's "Book One: Water - Chapter One: The Boy in the Iceberg"
+    is the other's "The Boy in the Iceberg"; and a floor, so "Jack" is no evidence."""
+    a, b = _norm_title(a), _norm_title(b)
+    if len(a) < 6 or len(b) < 6:
+        return False
+    if a == b or a in b or b in a:
+        return True
+    # The same words in another order: "Winter Solstice, Part 1: The Spirit World"
+    # against "The Spirit World (Winter Solstice, Part 1)". Every word of the shorter,
+    # bar the little ones, in the longer -- and at least two of them.
+    small = {"the", "a", "an", "of", "and", "in", "on", "to", "part"}
+    wa, wb = set(a.split()) - small, set(b.split()) - small
+    short, long_ = (wa, wb) if len(wa) <= len(wb) else (wb, wa)
+    return len(short) >= 2 and short <= long_
+
+
+def cross_check(rows, episode_list, witness_titles):
+    """Hold the plan's numbering up against a second source's episode titles.
+
+    For each planned episode the witness has a title for, one of three things is true:
+    it names the same episode TVmaze does (agreement); it names an episode TVmaze has
+    at a *different* number (a shift -- the disc is not where the plan puts it); or it
+    names nothing TVmaze has, which is the two sources' house styles differing ("Episode
+    I" against "The Beginning (1)") and says nothing either way.
+
+    Returns {"verdict": "agree" | "shifted" | "silent", "agree": n, "compared": n,
+    "offset": k or None, "filled": n}, and fills in any title TVmaze left empty.
+    """
+    out = {"verdict": "silent", "agree": 0, "compared": 0, "offset": None, "filled": 0}
+    if not witness_titles:
+        return out
+    by_number = {}
+    for e in episode_list or []:
+        if not e.get("special"):
+            by_number[(e["season"], e["number"])] = e.get("name") or ""
+    shifts = []
+    for r in rows:
+        if r.get("extra") or not r.get("include", True):
+            continue
+        n, season = r.get("episode"), r.get("season")
+        w = witness_titles.get(n)
+        if not w:
+            continue
+        if not r.get("episode_title"):
+            r["episode_title"] = w
+            out["filled"] += 1
+            continue
+        if _same_title(w, by_number.get((season, n), "")):
+            out["agree"] += 1
+            continue
+        match = [num for (s, num), name in by_number.items()
+                 if s == season and num != n and _same_title(w, name)]
+        if len(match) == 1:
+            shifts.append(match[0] - n)
+    out["compared"] = out["agree"] + len(shifts)
+    if shifts and len(shifts) >= 2 and len(set(shifts)) == 1 and len(shifts) > out["agree"]:
+        out["verdict"], out["offset"] = "shifted", shifts[0]
+    elif out["agree"] and len(shifts) <= out["agree"] // 3:
+        out["verdict"] = "agree"
+    return out
 
 
 def episodes(series_id, include_specials=True):
