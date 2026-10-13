@@ -1026,7 +1026,8 @@ def plan_warnings(plan, found, episode_list=None):
                    "that looks like a repeat.")
     if found.get("duplicates"):
         out.append("%d duplicate playlist%s ignored — this disc carries each episode "
-                   "twice, once with the “next time” trailer and once without."
+                   "twice (with and without the opening, or a “next time” trailer), "
+                   "and the longer, complete version was kept."
                    % (len(found["duplicates"]),
                       "" if len(found["duplicates"]) == 1 else "s"))
     if found.get("play_all"):
