@@ -348,13 +348,156 @@ def test_forget_host_keys():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_remote_target():
+    group("existing-host target validation")
+    import finish
+    base = {"existing_host": True, "user": "ubuntu", "password": " a'$ \\",
+            "hostname": "vm.example.lan"}
+    for host in ("vm.example.lan", "vm.local", "192.168.10.2", "vm"):
+        target = finish.validate_target(dict(base, hostname=host))
+        check("exact target %s" % host, target["hostname"], host)
+        check("password is not trimmed", target["password"], base["password"])
+        check("default ports", (target["ssh_port"], target["port"]), (22, 9797))
+    for changes in ({"hostname": "http://vm"}, {"hostname": "user@vm"},
+                    {"hostname": "vm;id"}, {"hostname": "256.1.1.1"},
+                    {"hostname": "::1"}, {"hostname": "-vm"},
+                    {"ssh_port": 0}, {"port": 65536}, {"port": "no"},
+                    {"port": 22.5}, {"port": True},
+                    {"password": ""}, {"password": "a\nb"}, {"user": ""}):
+        try:
+            finish.validate_target(dict(base, **changes))
+        except ValueError:
+            continue
+        check("invalid target refused: %r" % changes, True, False)
+    check("card config remains unchanged", finish.validate_target({"hostname": "riparr"}),
+          {"hostname": "riparr"})
+
+    from unittest.mock import patch
+    for uid, sudo_rc in (("0", 0), ("1000", 0), ("1000", 1)):
+        finisher = finish.Finisher(base)
+        calls = []
+        def command(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return ((sudo_rc, "") if cmd.startswith("sudo -n") else (0, uid))
+        with patch.object(finisher, "_password_command", side_effect=command):
+            finisher._preflight_existing()
+        check("root/sudo selection", finisher.sudo, uid != "0")
+        check("password sudo only when needed", finisher.sudo_password,
+              uid != "0" and sudo_rc != 0)
+        finisher._say("secret: " + base["password"])
+        check("password redacted from logs", base["password"] in finisher.log[-1], False)
+        check("config has no password", "password" in finisher.cfg, False)
+    finisher = finish.Finisher(base)
+    with patch.object(finish, "_port_open", return_value=True) as probe, \
+            patch.object(finisher, "_sweep", side_effect=AssertionError("no sweep")):
+        finisher.step_find()
+        check("exact remote address", finisher.address, base["hostname"])
+        check("SSH port probed", probe.call_args.args, (base["hostname"], 22))
+
+    from unittest.mock import Mock
+    import os, tempfile, bridge
+    with tempfile.TemporaryDirectory() as assets:
+        api = bridge.Bridge.__new__(bridge.Bridge)
+        api.assets, api.setup_thread, api.last_seen = assets, None, {}
+        api.setup_path, api.nosleep = os.path.join(assets, "progress.json"), Mock()
+        with patch.object(bridge.core, "payload_ok", return_value=(True, [])), \
+                patch.object(bridge.threading, "Thread"):
+            result = api.start_setup(dict(base, remote_user="ubuntu", update_only=True))
+            check("no card key needed", result["ok"], True)
+            instance = api.finisher
+            assert isinstance(instance, finish.Finisher)
+            check("update action forwarded without a card key", instance.update_only, True)
+            check("separate host trust file", instance.known_hosts,
+                  os.path.join(assets, "known_hosts_existing"))
+            check("progress contains no password", base["password"] in
+                  open(api.setup_path).read(), False)
+            instance._cleanup_existing()
+            check("password cleared on cleanup", instance.password, None)
+            api.setup_thread = None
+            check("card path still requires its key",
+                  api.start_setup({"hostname": "riparr"})["ok"], False)
+        finisher = finish.Finisher(dict(base, known_hosts=os.path.join(assets, "hosts")))
+        channel = Mock()
+        channel.recv_ready.side_effect = [True, False]
+        channel.recv.return_value = b"ready\n"
+        channel.exit_status_ready.return_value = True
+        channel.recv_exit_status.return_value = 0
+        finisher.client = Mock()
+        finisher.client.get_transport.return_value.open_session.return_value = channel
+        finisher.sudo = finisher.sudo_password = True
+        finisher._password_command("printf ready", privileged=True)
+        check("sudo secret sent only on stdin", channel.sendall.call_args.args,
+              ((base["password"] + "\n").encode("utf-8"),))
+        check("command contains no password", base["password"] in
+              channel.exec_command.call_args.args[0], False)
+        channel.close.assert_called_once()
+        class ChangedKey(Exception):
+            pass
+        class BadPassword(Exception):
+            pass
+        client = Mock()
+        client.connect.side_effect = ChangedKey()
+        module = Mock(SSHClient=Mock(return_value=client), BadHostKeyException=ChangedKey,
+                      AuthenticationException=BadPassword)
+        with patch.dict(sys.modules, paramiko=module):
+            try:
+                finisher._connect_existing()
+            except finish.StepFailed as error:
+                check("changed host key refused", error.step, "connect")
+            else:
+                check("changed key must not be accepted", True, False)
+        client.save_host_keys.assert_not_called()
+        finisher._cleanup_existing()
+
+
+def test_update_routing():
+    group("fresh setup versus application update")
+    import finish
+    from contextlib import ExitStack
+    from unittest.mock import patch
+    from types import SimpleNamespace
+    for existing in (False, True):
+        for update in (False, True):
+            cfg = {"hostname": "vm.example.lan" if existing else "riparr",
+                   "existing_host": existing, "update_only": update,
+                   "user": "ubuntu", "password": "test-password", "port": 9876}
+            finisher = finish.Finisher(cfg)
+            finisher.address = cfg["hostname"]
+            calls = []
+            with ExitStack() as stack:
+                for key in ("find", "connect", "copy", "bootstrap", "install", "verify"):
+                    def step(key=key):
+                        calls.append(key)
+                        finisher._finish_step(key)
+                    stack.enter_context(patch.object(finisher, "step_" + key, side_effect=step))
+                stack.enter_context(patch.object(finisher, "_cleanup_existing"))
+                check("setup/update finishes", finisher.run(), True)
+            check("bootstrap runs only for fresh setup", "bootstrap" in calls, not update)
+            check("progress omits skipped bootstrap", "bootstrap" in finisher.state, not update)
+            check("progress completes", finisher._pct(), 100.0)
+            check("target address retained", finisher.address, cfg["hostname"])
+            if not existing:
+                result = SimpleNamespace(returncode=0, stdout="root\nriparr\nLinux\n", stderr="")
+                with patch.object(finisher, "_forget_host_key") as forget, \
+                        patch.object(finish.subprocess, "run", return_value=result):
+                    finisher.step_connect()
+                    check("update keeps the remembered host key", forget.called, not update)
+            with patch.object(finisher, "_password_command", return_value=(0, "")) as password, \
+                    patch.object(finisher, "_run_remote", return_value=0) as key_command:
+                finisher.step_install()
+                command = (password if existing else key_command).call_args.args[0]
+                check("installer update flag", "RIPARR_UPDATE_ONLY=1" in command, update)
+                if existing and update:
+                    check("update does not request a new port", "RIPARR_PORT=" in command, False)
+
+
 def main():
     print("Riparr Preparer selftest — host is %s, card writing %s"
           % (hostos.NAME, "supported" if hostos.CAN_WRITE else "not supported"))
     for fn in (test_contract, test_device_ids, test_partition_names,
                test_mount_matching, test_cmdline, test_sink_blocking,
                test_partition_layout, test_cloud_init, test_boards,
-               test_forget_host_keys):
+               test_forget_host_keys, test_remote_target, test_update_routing):
         fn()
     print()
     if FAILED:

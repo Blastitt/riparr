@@ -24,8 +24,11 @@ Progress is published to a JSON file the window polls, the same contract writer.
 already uses -- see `publish()`. Nothing here writes to stdout unless run as a CLI.
 """
 import argparse
+import codecs
+import ipaddress
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
@@ -117,6 +120,42 @@ class StepFailed(Exception):
         self.detail = detail
 
 
+def validate_target(cfg):
+    result = dict(cfg)
+    if not result.get("existing_host"):
+        return result
+    host = str(result.get("hostname", "")).strip()
+    labels = host.rstrip(".").split(".")
+    if not host or len(host) > 253:
+        raise ValueError("Enter a hostname or IPv4 address.")
+    if re.fullmatch(r"[0-9.]+", host):
+        try:
+            ipaddress.IPv4Address(host)
+        except ValueError:
+            raise ValueError("Enter a valid IPv4 address.") from None
+    elif not all(re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?",
+                             label) for label in labels):
+        raise ValueError("Enter a hostname or IPv4 address, not a URL or SSH command.")
+    for key, default, label in (("ssh_port", 22, "SSH"), ("port", 9797, "HTTP")):
+        raw = result.get(key, default)
+        try:
+            value = int(raw)
+        except (ValueError, TypeError):
+            raise ValueError("%s port must be between 1 and 65535." % label) from None
+        if isinstance(raw, bool) or str(raw).strip() != str(value) or not 1 <= value <= 65535:
+            raise ValueError("%s port must be between 1 and 65535." % label)
+        result[key] = value
+    user = str(result.get("user", "")).strip()
+    if not user or any(char.isspace() or char in "\x00\r\n" for char in user):
+        raise ValueError("Enter the SSH username.")
+    password = result.get("password")
+    if not isinstance(password, str) or not password or any(
+            char in password for char in "\x00\r\n"):
+        raise ValueError("Enter the SSH password (without line breaks).")
+    result.update(hostname=host, user=user)
+    return result
+
+
 def publish(path, **kw):
     """See statusfile.publish -- which never lets a busy status file kill setup."""
     statusfile.publish(path, **kw)
@@ -168,7 +207,21 @@ class Finisher:
     """
 
     def __init__(self, cfg, progress_path=None, on_line=None):
-        self.cfg = cfg
+        self.cfg = validate_target(cfg)
+        self.password = self.cfg.pop("password", None)
+        cfg = self.cfg
+        self.existing_host = bool(cfg.get("existing_host"))
+        self.update_only = bool(cfg.get("update_only"))
+        self.steps = [
+            (key, "Updating Riparr" if self.update_only and key == "install" else title,
+             "Updating dependencies and service components" if self.update_only and key == "install" else detail)
+            for key, title, detail in STEPS if not (self.update_only and key == "bootstrap")]
+        self.ssh_port = int(cfg.get("ssh_port", 22))
+        self.client = None
+        self.dest = "/root/riparr"
+        self.staging = None
+        self.sudo = False
+        self.sudo_password = False
         self.progress_path = progress_path
         self.on_line = on_line
         self.host = cfg.get("hostname", "riparr")
@@ -182,15 +235,15 @@ class Finisher:
         self.found_by = None         # "name" or "address"
         self.reachable_by_name = None  # did <host>.local answer from this Mac?
         self.log = deque(maxlen=400)
-        self.state = {k: "waiting" for k, _, _ in STEPS}
+        self.state = {k: "waiting" for k, _, _ in self.steps}
         self.current = None
         self.cancel = threading.Event()
         self.error = None
 
     # ── progress reporting ──────────────────────────────────────────────
     def _pct(self):
-        done = sum(WEIGHTS[k] for k, _, _ in STEPS if self.state[k] == "done")
-        total = sum(WEIGHTS.values())
+        done = sum(WEIGHTS[k] for k, _, _ in self.steps if self.state[k] == "done")
+        total = sum(WEIGHTS[k] for k, _, _ in self.steps)
         return round(100.0 * done / total, 1)
 
     def _emit(self, phase, message, **extra):
@@ -198,8 +251,11 @@ class Finisher:
                 phase=phase,
                 message=message,
                 step=self.current,
-                steps=[{"id": k, "title": t, "detail": d, "state": self.state[k]}
-                       for k, t, d in STEPS],
+                steps=[{"id": k, "title": t,
+                    "detail": ("Authenticating and checking Linux capabilities"
+                           if self.existing_host and k == "connect" else d),
+                    "state": self.state[k]}
+                       for k, t, d in self.steps],
                 pct=self._pct(),
                 address=self.address,
                 found_by=self.found_by,
@@ -211,6 +267,8 @@ class Finisher:
     def _say(self, line):
         """One line of raw output, for the disclosure triangle."""
         line = line.rstrip("\n")
+        if self.password:
+            line = line.replace(self.password, "[redacted]")
         if not line:
             return
         self.log.append(line)
@@ -220,12 +278,12 @@ class Finisher:
     def _begin(self, key):
         self.current = key
         self.state[key] = "running"
-        title = next(t for k, t, _ in STEPS if k == key)
+        title = next(t for k, t, _ in self.steps if k == key)
         self._emit("running", title)
 
     def _finish_step(self, key):
         self.state[key] = "done"
-        self._emit("running", next(t for k, t, _ in STEPS if k == key))
+        self._emit("running", next(t for k, t, _ in self.steps if k == key))
 
     def _check_cancel(self):
         if self.cancel.is_set():
@@ -272,7 +330,7 @@ class Finisher:
             for line in p.stdout:
                 self._say(_strip_ansi(line))
                 self._emit("running",
-                           next(t for k, t, _ in STEPS if k == step))
+                           next(t for k, t, _ in self.steps if k == step))
                 if self.cancel.is_set():
                     p.kill()
                     raise Cancelled()
@@ -288,6 +346,141 @@ class Finisher:
                              "\n".join(useful(self.log)[-25:]))
         return rc
 
+    def _password_command(self, command, step="connect", timeout=60,
+                          privileged=False, check=True, writer=None, cleanup=False):
+        if not cleanup:
+            self._check_cancel()
+        if privileged and self.sudo:
+            options = "-S -p ''" if self.sudo_password else "-n"
+            command = "sudo %s -- sh -c %s" % (options, shlex.quote(command))
+        self._say("$ %s" % command)
+        channel = self.client.get_transport().open_session(timeout=10)
+        channel.settimeout(10)
+        channel.set_combine_stderr(True)
+        deadline = time.monotonic() + timeout
+        errors = []
+        sender = None
+        try:
+            channel.exec_command(command)
+            if privileged and self.sudo and self.sudo_password:
+                channel.sendall((self.password + "\n").encode("utf-8"))
+            if writer:
+                def send():
+                    try:
+                        with channel.makefile_stdin("wb") as stream:
+                            writer(stream)
+                    except Exception as exc:
+                        errors.append(exc)
+                    finally:
+                        try:
+                            channel.shutdown_write()
+                        except Exception:
+                            pass
+                sender = threading.Thread(target=send, daemon=True)
+                sender.start()
+            else:
+                channel.shutdown_write()
+            decoder = codecs.getincrementaldecoder("utf-8")("replace")
+            output, pending = "", ""
+            while True:
+                if not cleanup:
+                    self._check_cancel()
+                if time.monotonic() > deadline:
+                    raise StepFailed(step, "The remote command timed out.", command)
+                if channel.recv_ready():
+                    text = decoder.decode(channel.recv(32768))
+                    output = (output + text)[-65536:]
+                    pending += text
+                    while "\n" in pending:
+                        line, pending = pending.split("\n", 1)
+                        self._say(_strip_ansi(line))
+                    if not cleanup:
+                        self._emit("running", next(t for k, t, _ in self.steps if k == step))
+                elif channel.exit_status_ready():
+                    break
+                else:
+                    self.cancel.wait(0.1) if not cleanup else threading.Event().wait(0.1)
+            if pending:
+                self._say(_strip_ansi(pending))
+            rc = channel.recv_exit_status()
+            if sender:
+                sender.join(timeout=10)
+                if sender.is_alive():
+                    raise StepFailed(step, "The upload did not finish.")
+            if errors:
+                raise StepFailed(step, "Couldn't upload Riparr.", str(errors[0]))
+            if check and rc != 0:
+                raise StepFailed(step, "The remote command failed.",
+                                 "\n".join(useful(self.log)[-25:]))
+            return rc, output.strip()
+        finally:
+            channel.close()
+            if sender:
+                sender.join(timeout=10)
+
+    def _connect_existing(self):
+        try:
+            import paramiko
+        except ImportError:
+            raise StepFailed("connect", "The SSH library is missing.",
+                             "Install the Preparer requirements or download a new build.")
+        self.client = paramiko.SSHClient()
+        self.client.load_system_host_keys()
+        os.makedirs(os.path.dirname(os.path.abspath(self.known_hosts)), exist_ok=True)
+        if os.path.exists(self.known_hosts):
+            self.client.load_host_keys(self.known_hosts)
+        self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            self.client.connect(self.host, port=self.ssh_port, username=self.user,
+                                password=self.password, look_for_keys=False,
+                                allow_agent=False, timeout=10, banner_timeout=15,
+                                auth_timeout=20)
+        except paramiko.BadHostKeyException:
+            raise StepFailed("connect", "The host's SSH identity has changed.",
+                             "Verify the host key independently before updating known_hosts. "
+                             "Riparr has not forgotten or replaced the trusted key.") from None
+        except paramiko.AuthenticationException:
+            raise StepFailed("connect", "SSH authentication failed.",
+                             "Check the username, password and host SSH login policy.") from None
+        self.client.save_host_keys(self.known_hosts)
+        self.client.get_transport().set_keepalive(15)
+        self._preflight_existing()
+
+    def _preflight_existing(self):
+        command = """set -e
+[ "$(uname -s)" = Linux ] || { echo 'A Linux host is required'; exit 1; }
+for tool in bash tar apt-get dpkg; do
+    command -v "$tool" >/dev/null || { echo "Missing required tool: $tool"; exit 1; }
+done
+[ -d /run/systemd/system ] && systemctl show-environment >/dev/null || {
+    echo 'A running systemd host is required; ordinary Docker containers are unsupported'; exit 1;
+}
+uname -m
+if [ -r /etc/os-release ]; then . /etc/os-release; printf '%s\\n' "$PRETTY_NAME"; fi
+id -u"""
+        _, output = self._password_command(command)
+        self.sudo = output.splitlines()[-1] != "0"
+        if self.sudo:
+            rc, _ = self._password_command(
+                "sudo -n -- sh -c 'test \"$(id -u)\" = 0'", check=False)
+            if rc:
+                self.sudo_password = True
+                self._password_command('test "$(id -u)" = 0', privileged=True)
+
+    def _cleanup_existing(self):
+        try:
+            if self.client and self.staging:
+                self._password_command("rm -rf -- %s" % shlex.quote(self.staging),
+                                       step=self.current or "copy", timeout=10,
+                                       check=False, cleanup=True)
+        except Exception:
+            pass
+        finally:
+            if self.client:
+                self.client.close()
+            self.client = None
+            self.password = None
+
     # ── the steps ───────────────────────────────────────────────────────
     def step_find(self):
         """Locate the box by name, then by address.
@@ -299,6 +492,14 @@ class Finisher:
         to absorb.
         """
         self._begin("find")
+        if self.existing_host:
+            if not _port_open(self.host, self.ssh_port, timeout=10):
+                raise StepFailed("find", "Cannot reach the SSH server.",
+                                 "Check %s:%d and the host firewall." %
+                                 (self.host, self.ssh_port))
+            self.address, self.found_by = self.host, "address"
+            self._finish_step("find")
+            return
         name = "%s.local" % self.host
         deadline = time.time() + TIMEOUTS["find"]
         swept = False
@@ -430,7 +631,12 @@ class Finisher:
 
     def step_connect(self):
         self._begin("connect")
-        self._forget_host_key(self.address)
+        if self.existing_host:
+            self._connect_existing()
+            self._finish_step("connect")
+            return
+        if not self.update_only:
+            self._forget_host_key(self.address)
         p = subprocess.run(
             self._ssh_base() + ["id -un; cat /etc/hostname; uname -sr"],
             capture_output=True, text=True, **_UTF8, timeout=TIMEOUTS["connect"], **_NOWIN)
@@ -451,6 +657,17 @@ class Finisher:
         one pipe with no temporary files and nothing left behind on failure.
         """
         self._begin("copy")
+        if self.existing_host:
+            _, dest = self._password_command("mktemp -d /tmp/riparr-setup.XXXXXXXX",
+                                             step="copy")
+            if not re.fullmatch(r"/tmp/riparr-setup\.[a-zA-Z0-9]+", dest):
+                raise StepFailed("copy", "The host returned an invalid staging directory.")
+            self.dest = self.staging = dest
+            self._password_command("tar -xmf - -C %s" % shlex.quote(dest),
+                                   step="copy", timeout=TIMEOUTS["copy"],
+                                   writer=self._write_archive)
+            self._finish_step("copy")
+            return
         dest = "/root/riparr"
         self._say("$ tar -cf - (working tree) | ssh … tar -xf - -C %s" % dest)
         # COPYFILE_DISABLE stops macOS tar writing an AppleDouble "._name" beside every
@@ -490,6 +707,28 @@ class Finisher:
 
     _SKIP_DIRS = {".venv", ".git", "__pycache__"}
 
+    def _write_archive(self, stream):
+        import tarfile
+        with tarfile.open(fileobj=stream, mode="w|", format=tarfile.GNU_FORMAT) as archive:
+            for root, dirs, files in os.walk(self.repo):
+                self._check_cancel()
+                rel = os.path.relpath(root, self.repo).replace(os.sep, "/")
+                dirs[:] = sorted(d for d in dirs if d not in self._SKIP_DIRS
+                                 and not (rel == "packaging" and d == "dmg"))
+                for name in sorted(files):
+                    if name.endswith(".pyc") or name.startswith("._"):
+                        continue
+                    path = os.path.join(root, name)
+                    arc = name if rel == "." else rel + "/" + name
+                    info = archive.gettarinfo(path, arcname=arc)
+                    with open(path, "rb") as source:
+                        head = source.read(2)
+                        source.seek(0)
+                        info.mode = 0o755 if head == b"#!" else 0o644
+                        info.uid = info.gid = 0
+                        info.uname = info.gname = "root"
+                        archive.addfile(info, source)
+
     def _copy_tree_windows(self, remote):
         """The same tar stream, built in Python. -> (output, tar_rc, ssh_rc).
 
@@ -508,24 +747,7 @@ class Finisher:
         reader.start()
         tar_rc = 0
         try:
-            with tarfile.open(fileobj=ssh.stdin, mode="w|", format=tarfile.GNU_FORMAT) as t:
-                for root, dirs, files in os.walk(self.repo):
-                    rel = os.path.relpath(root, self.repo).replace(os.sep, "/")
-                    dirs[:] = sorted(d for d in dirs if d not in self._SKIP_DIRS
-                                     and not (rel == "packaging" and d == "dmg"))
-                    for name in sorted(files):
-                        if name.endswith(".pyc") or name.startswith("._"):
-                            continue
-                        path = os.path.join(root, name)
-                        arc = name if rel == "." else rel + "/" + name
-                        info = t.gettarinfo(path, arcname=arc)
-                        with open(path, "rb") as f:
-                            head = f.read(2)
-                            f.seek(0)
-                            info.mode = 0o755 if head == b"#!" else 0o644
-                            info.uid = info.gid = 0
-                            info.uname = info.gname = "root"
-                            t.addfile(info, f)
+            self._write_archive(ssh.stdin)
         except (OSError, tarfile.TarError) as e:
             chunks.append(("\ncould not build the archive: %s\n" % e).encode())
             tar_rc = 1
@@ -545,13 +767,28 @@ class Finisher:
 
     def step_bootstrap(self):
         self._begin("bootstrap")
+        if self.existing_host:
+            self._password_command("cd %s && RIPARR_PRESERVE_SWAP=1 bash tools/bootstrap.sh"
+                                   % shlex.quote(self.dest), step="bootstrap",
+                                   timeout=TIMEOUTS["bootstrap"], privileged=True)
+            self._finish_step("bootstrap")
+            return
         self._run_remote("cd /root/riparr && bash tools/bootstrap.sh",
                          "bootstrap", TIMEOUTS["bootstrap"])
         self._finish_step("bootstrap")
 
     def step_install(self):
         self._begin("install")
-        self._run_remote("cd /root/riparr && sudo bash tools/install.sh",
+        if self.existing_host:
+            mode = "RIPARR_UPDATE_ONLY=1" if self.update_only else "RIPARR_PORT=%d" % self.port
+            self._password_command("cd %s && %s RIPARR_HOST_ADDRESS=%s bash tools/install.sh" %
+                                   (shlex.quote(self.dest), mode, shlex.quote(self.host)), step="install",
+                                   timeout=TIMEOUTS["install"], privileged=True)
+            self._finish_step("install")
+            return
+        command = ("cd /root/riparr && sudo env RIPARR_UPDATE_ONLY=1 bash tools/install.sh"
+               if self.update_only else "cd /root/riparr && sudo bash tools/install.sh")
+        self._run_remote(command,
                          "install", TIMEOUTS["install"])
         self._finish_step("install")
 
@@ -565,7 +802,8 @@ class Finisher:
         """
         self._begin("verify")
         url = "http://%s:%d/api/setup/state" % (self.address, self.port)
-        by_name = "http://%s.local:%d/api/setup/state" % (self.host, self.port)
+        by_name = (url if self.existing_host else
+               "http://%s.local:%d/api/setup/state" % (self.host, self.port))
         deadline = time.time() + TIMEOUTS["verify"]
         last = ""
         while time.time() < deadline:
@@ -589,7 +827,8 @@ class Finisher:
             self.step_find()
             self.step_connect()
             self.step_copy()
-            self.step_bootstrap()
+            if not self.update_only:
+                self.step_bootstrap()
             self.step_install()
             self.step_verify()
         except Cancelled:
@@ -605,10 +844,14 @@ class Finisher:
             self._emit("error", "Something went wrong during setup.",
                        detail="%s: %s" % (type(e).__name__, e))
             return False
+        finally:
+            if self.existing_host:
+                self._cleanup_existing()
 
-        self._emit("done", "Riparr is running.",
+        self._emit("done", "Riparr updated." if self.update_only else "Riparr is running.",
                    elapsed=round(time.time() - started),
-                   url="http://%s.local:%d" % (self.host, self.port),
+                    url=("http://%s:%d" % (self.host, self.port) if self.existing_host
+                        else "http://%s.local:%d" % (self.host, self.port)),
                    url_address="http://%s:%d" % (self.address, self.port),
                    by_name=self.reachable_by_name)
         return True
@@ -649,11 +892,17 @@ def _resolve(name):
 def main():
     ap = argparse.ArgumentParser(
         description="Take a freshly booted Riparr from powered-on to running.")
-    ap.add_argument("--host", default="riparr", help="hostname without .local")
+    ap.add_argument("--host", default="riparr",
+                    help="card name, or exact hostname/IPv4 with --existing-host")
     ap.add_argument("--port", type=int, default=9797)
     ap.add_argument("--user", default="root",
                     help="Armbian has no other account until install.sh makes one")
     ap.add_argument("--key", default="~/riparr-build/riparr_key")
+    ap.add_argument("--existing-host", action="store_true",
+                    help="configure an existing apt/systemd host using password SSH")
+    ap.add_argument("--ssh-port", type=int, default=22)
+    ap.add_argument("--update-only", action="store_true",
+                    help="update an existing installation without first-time system setup")
     ap.add_argument("--repo", default=REPO)
     ap.add_argument("--progress", default="", help="write progress JSON here")
     ap.add_argument("--find-only", action="store_true",
@@ -661,7 +910,12 @@ def main():
     args = ap.parse_args()
 
     cfg = {"hostname": args.host, "port": args.port, "user": args.user,
-           "key": args.key, "repo": args.repo}
+           "key": args.key, "repo": args.repo,
+           "existing_host": args.existing_host, "ssh_port": args.ssh_port,
+           "update_only": args.update_only}
+    if args.existing_host:
+        import getpass
+        cfg["password"] = getpass.getpass("SSH password: ")
     f = Finisher(cfg, args.progress or None,
                  on_line=lambda l: print("  " + l, flush=True))
 
@@ -677,7 +931,8 @@ def main():
     print("Setting up %s\n" % args.host)
     ok = f.run()
     if ok:
-        print("\nRiparr is running: http://%s.local:%d" % (args.host, args.port))
+        print("\nRiparr is running: http://%s:%d" %
+              (args.host if args.existing_host else args.host + ".local", args.port))
         return 0
     if f.error:
         print("\n%s\n%s" % (f.error.message, f.error.detail), file=sys.stderr)

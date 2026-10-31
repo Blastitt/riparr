@@ -400,6 +400,19 @@ def drive_eject(user=Depends(require_user)):
     return P.eject()
 
 
+class DriveSelection(BaseModel):
+    identity: str
+
+
+@app.post("/api/drive/select")
+def drive_select(body: DriveSelection, user=Depends(require_user)):
+    try:
+        P.select_optical_drive(body.identity)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"ok": True}
+
+
 @app.post("/api/drive/close")
 def drive_close(user=Depends(require_user)):
     ok, message = P.close_tray()
@@ -490,7 +503,7 @@ def drive_signal_test(body: SignalTest = SignalTest(), user=Depends(require_user
         raise HTTPException(status_code=400,
                             detail="Put a disc in first — the light is blinked by "
                                    "reading one.")
-    r = P.duplicate_signal((d or {}).get("device") or "/dev/sr0", mode=body.mode)
+    r = P.duplicate_signal((d or {}).get("device"), mode=body.mode)
     return {"ok": bool(r.get("ok")), "message": r.get("message")}
 
 
@@ -743,8 +756,13 @@ def _autorip_state():
     if drives:
         d = drives[0]
         name = " ".join(x for x in (d.get("vendor"), d.get("model")) if x)
-        check("A drive to read them in", "ok",
-              "%s · %s" % (name or "Optical drive", _reads_phrase(d)))
+        if d.get("readable") is False:
+            check("A drive to read them in", "fail", "The selected drive is not accessible",
+                  "Check optical-device permissions and physical-drive passthrough.",
+                  "#/system/status")
+        else:
+            check("A drive to read them in", "ok",
+                  "%s · %s" % (name or "Optical drive", _reads_phrase(d)))
     else:
         check("A drive to read them in", "fail", "No optical drive detected",
               "A working USB bridge appears here even with no disc in the tray.",
@@ -838,6 +856,11 @@ async def put_settings(request: Request, user=Depends(require_user)):
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Expected an object")
     body.pop("session_secret", None)
+    if "optical_drive" in body:
+        try:
+            P.select_optical_drive(body.pop("optical_drive"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
     for k, v in body.items():
         if k in SECRET_SETTINGS and v == SECRET_MASK:
             continue                      # unchanged; do not overwrite with the mask
@@ -1075,7 +1098,11 @@ def shares_create(body: ShareCreate, user=Depends(require_user)):
                        body.host, "/".join(x for x in (share, path) if x),
                        body.username, body.password)
     db.mark_share_verified(sid)
-    return {"ok": True, "id": sid, "test": result}
+    requested = P.request_remount()
+    return {"ok": True, "id": sid, "test": result, "mount_requested": requested,
+            "warning": "" if requested else
+            "The share was saved, but Riparr could not request its mount. "
+            "Reconnect it from Library, or re-run the Preparer to repair system components."}
 
 
 @app.delete("/api/shares/{share_id}")

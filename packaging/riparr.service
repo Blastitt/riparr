@@ -26,6 +26,7 @@ WorkingDirectory=/opt/riparr/server
 # The default port, overridden by whatever the preparer wrote to the boot partition.
 # Later assignments win, so the file beats this line when it exists.
 Environment=RIPARR_PORT=9797
+Environment=RIPARR_APPLIANCE=1
 Environment=RIPARR_DB=/var/lib/riparr/riparr.db
 Environment=PYTHONUNBUFFERED=1
 # The service account may be the login account the Imager created, whose home is under
@@ -34,6 +35,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=HOME=/var/lib/riparr
 EnvironmentFile=-/boot/firmware/riparr.conf
 EnvironmentFile=-/boot/riparr.conf
+EnvironmentFile=-/etc/default/riparr
 
 ExecStart=/opt/riparr/.venv/bin/python -m uvicorn riparr.main:app \
           --host 0.0.0.0 --port ${RIPARR_PORT}

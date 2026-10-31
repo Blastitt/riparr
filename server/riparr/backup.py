@@ -244,10 +244,8 @@ def command(family, device, dest, name="disc"):
 
 
 def _disc_arg(device):
-    if not device:
-        return "disc:0"
-    m = re.search(r"sr(\d+)$", device)
-    return "disc:%s" % (m.group(1) if m else "0")
+    from . import makemkv
+    return makemkv.disc_source(device)
 
 
 _PRGC = re.compile(r'^PRGC:\d+,\d+,"(.*)"')

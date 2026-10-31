@@ -7,6 +7,9 @@
 #
 # Usage:  ./makemkv-install.sh --accept-eula [--jobs N] [--srcdir DIR]
 set -euo pipefail
+as_root() {
+  if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi
+}
 
 # Run from a systemd unit there may be no HOME at all, and `set -u` turns that into a
 # fatal error on this line -- before any argument is parsed, so even an explicit
@@ -188,9 +191,9 @@ done
 if [ -n "$MISSING" ]; then
   echo "=== 0. Build tools:$MISSING ==="
   if [ "$(id -u)" = 0 ]; then
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=1200 update -qq
     # shellcheck disable=SC2086
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $MISSING \
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=1200 install -y -qq $MISSING \
       || { echo "Could not install build tools:$MISSING"; exit 2; }
   else
     echo "Not running as root; install these first:"
@@ -221,15 +224,15 @@ $TIME make -j"$JOBS" 2> "$LOG/makemkv-oss-build.time" || {
     exit 1
 }
 grep -E "Maximum resident set size|Elapsed \(wall" "$LOG/makemkv-oss-build.time" || true
-sudo make install
-sudo ldconfig
+as_root make install
+as_root ldconfig
 
-echo "=== 2. Install the arm64 makemkvcon binary ==="
+echo "=== 2. Install the native makemkvcon binary ==="
 cd "$BIN"
 # The Makefile gates on tmp/eula_accepted, produced by an interactive `less` prompt
 # that cannot run headlessly. --accept-eula above is the user's acceptance.
 mkdir -p tmp && echo accepted > tmp/eula_accepted
-sudo make install
+as_root make install
 
 echo "=== 3. Verify ==="
 BIN_PATH="$(command -v makemkvcon || echo /usr/bin/makemkvcon)"

@@ -157,6 +157,7 @@ ADDED_COLUMNS = {
 
 # Defaults are the shipped opinion. The settings reference in docs/guide mirrors these.
 DEFAULTS = {
+    "optical_drive": None,
     "setup_complete": False,
     "auto_rip": False,
     # Keep the box cool while ripping: CPU ceiling and two cores during a rip

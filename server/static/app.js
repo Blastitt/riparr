@@ -207,6 +207,37 @@ $("#login-form").onsubmit = async (e) => {
 };
 
 /* ════════════════════ first run ════════════════════ */
+function opticalSelector(optical) {
+  const available = optical && (optical.available || optical.drives) || [];
+  const selected = optical && optical.drives && optical.drives[0];
+  if (!available.length || (available.length === 1 && selected)) return "";
+  return `<label class="f"><span>Physical ripping drive</span>
+    <select data-optical-drive>
+      <option value="" disabled ${selected ? "" : "selected"}>Select a drive</option>
+      ${available.map(drive => `<option value="${esc(drive.id)}" ${
+        selected && selected.id === drive.id ? "selected" : ""}>${esc(
+          [drive.vendor, drive.model, drive.device].filter(Boolean).join(" "))}</option>`).join("")}
+    </select></label>`;
+}
+
+document.addEventListener("change", async event => {
+  const select = event.target.closest("[data-optical-drive]");
+  if (!select || !select.value) return;
+  select.disabled = true;
+  try {
+    await api.post("/api/drive/select", { identity: select.value });
+    toast("Ripping drive selected", "ok");
+    if (!$("#wizard").classList.contains("hidden") && wizard.step === 1) {
+      await wizard.makemkv();
+    }
+  } catch (error) {
+    toast(error.message, "bad");
+    select.value = "";
+  } finally {
+    select.disabled = false;
+  }
+});
+
 const wizard = {
   step: 0,
   data: { username: "", password: "", host: "", share: "", path: "", user: "", pass: "" },
@@ -330,7 +361,7 @@ const wizard = {
         <span class="grow"></span>
         <span class="badge ${opt.drives && opt.drives.length ? "ok" : "warn"}">${
           opt.drives && opt.drives.length ? "Found" : "Not found"}</span></h2>
-        <div>${opt.drives && opt.drives.length
+        <div>${opticalSelector(opt)}${opt.drives && opt.drives.length
           ? `<div class="kv">
                <div class="k">Drive</div><div class="v">${esc(
                  [opt.drives[0].vendor, opt.drives[0].model].filter(Boolean).join(" ")
@@ -563,7 +594,9 @@ const wizard = {
         if (r.ok) {
           out.innerHTML = `<div class="result ok"><b>The share works</b>
             Wrote a file to ${esc(r.target)}, read it back and deleted it.</div>`;
-          await api.post("/api/shares", { ...body, name: `${host}/${body.share}` });
+          const saved = await api.post("/api/shares", { ...body, name: `${host}/${body.share}` });
+          out.innerHTML += `<div class="result ${saved.mount_requested ? "" : "bad"}">${esc(
+            saved.warning || "Share saved. Mount requested; Library will report when it is connected.")}</div>`;
           $("#w-go").disabled = false;
           toast("Share saved", "ok");
         } else {
@@ -3136,6 +3169,8 @@ systemPages.status = async () => {
 
     <div class="section"><h2>Disc reading<span class="grow"></span>
       <span class="badge ${m.installed ? "ok" : "bad"}">${m.installed ? "Ready" : "Missing"}</span></h2>
+      ${opticalSelector(st.optical)}
+      ${st.optical && st.optical.hint ? `<p class="why">${esc(st.optical.hint)}</p>` : ""}
       <div class="kv">
         <div class="k">MakeMKV</div><div class="v">${m.installed ? esc(m.version || "installed") : "not installed"}</div>
         <div class="k">Key</div><div class="v">${m.key_expires

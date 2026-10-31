@@ -173,6 +173,8 @@ def _autorip_ready(drives=None):
     if not drives:
         return False
     d = next((x for x in drives if x.get("present")), None)
+    if d and d.get("readable") is False:
+        return False
     if not (d and d.get("media_kind") == "cd"):
         if not P.makemkv_status().get("installed"):
             return False
@@ -198,6 +200,8 @@ def enqueue(force=False, expect=None, manual=False):
     d = next((x for x in drives if x.get("present")), None)
     if not d:
         return None, "There's no disc in the tray."
+    if d.get("readable") is False:
+        return None, "Riparr cannot access the selected drive. Check its optical-device permissions."
 
     # The *drive*, not "anything in flight". A previous rip that is still uploading
     # from the card has already given the disc back, and holding the tray shut for it
@@ -993,11 +997,8 @@ CINFO_NAME = re.compile(r'^CINFO:2,\d+,"(.*)"\s*$')
 
 
 def _disc_arg(device):
-    """MakeMKV addresses drives by its own index, not by /dev path."""
-    if not device:
-        return "disc:0"
-    m = re.search(r"sr(\d+)$", device)
-    return "disc:%s" % (m.group(1) if m else "0")
+    from . import makemkv
+    return makemkv.disc_source(device)
 
 
 _JUNK_LABEL = re.compile(r"^(?:logical_volume_id|dvd_video|bluray|untitled|unknown)$", re.I)

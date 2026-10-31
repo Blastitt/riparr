@@ -653,17 +653,16 @@ class Bridge:
 
     # ── the second half: from a powered-on board to a running Riparr ──
     def start_setup(self, cfg):
-        """Kick off remote setup. Returns immediately; poll setup_status().
-
-        No elevation here, and no password prompt: everything happens on the box over
-        SSH, authenticated by the key the card already carries. That is the whole
-        reason this can be automatic rather than a console the user has to drive.
-        """
+        """Start SSH setup using a prepared-card key or existing-host credentials."""
         if self.setup_thread and self.setup_thread.is_alive():
             return {"ok": False, "error": "Setup is already running."}
 
+        try:
+            target = finish.validate_target(dict(cfg, user=cfg.get("remote_user", "root")))
+        except (ValueError, TypeError) as exc:
+            return {"ok": False, "error": str(exc)}
         key = os.path.join(self.assets, "riparr_key")
-        if not os.path.exists(key):
+        if not target.get("existing_host") and not os.path.exists(key):
             return {"ok": False,
                     "error": "The SSH key is missing from your build folder, so the "
                              "box cannot be reached. Prepare a card again."}
@@ -680,11 +679,16 @@ class Bridge:
                               % ", ".join(missing))}
 
         self.finisher = finish.Finisher(
-            {"hostname": cfg.get("hostname", "riparr"),
-             "port": int(cfg.get("port", core.DEFAULT_PORT)),
-             "user": cfg.get("remote_user", "root"),
+            {"hostname": target.get("hostname", "riparr"),
+             "port": int(target.get("port", core.DEFAULT_PORT)),
+             "user": target.get("user", "root"),
+             "existing_host": bool(target.get("existing_host")),
+             "update_only": bool(target.get("update_only")),
+             "ssh_port": target.get("ssh_port", 22),
+             "password": target.get("password"),
              "key": key,
-             "known_hosts": os.path.join(self.assets, "known_hosts"),
+             "known_hosts": os.path.join(self.assets, "known_hosts_existing"
+                                         if target.get("existing_host") else "known_hosts"),
              "address_hint": self.last_seen.get(
                  "%s.local" % cfg.get("hostname", "riparr").strip().lower()),
              "repo": core.payload_root()},
@@ -706,14 +710,15 @@ class Bridge:
             self._release_if_idle()
         return st
 
-    def probe_box(self, hostname, port=None):
+    def probe_box(self, hostname, port=None, exact_target=False):
         """What is running there, and what this app would put there instead.
 
         Both halves of the comparison in one answer, because the screen's whole job is
         to say what will change: "running 0.2.3, this installs 0.3.0". See
         core.probe_appliance.
         """
-        r = core.probe_appliance(hostname, port or core.DEFAULT_PORT)
+        r = core.probe_appliance(hostname, port or core.DEFAULT_PORT,
+                     exact_target=exact_target)
         r["installs"] = core.payload_version()
         r["makemkv_installs"] = core.makemkv_bundle(
             os.path.join(self.assets, "makemkv"))["version"]
