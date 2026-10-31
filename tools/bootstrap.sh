@@ -2,20 +2,23 @@
 # Run FIRST after SSH-ing in. Captures the volatile first-boot journal before
 # it is lost, then makes logging persistent for every boot after this one.
 set -uo pipefail
+as_root() {
+  if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi
+}
 # $HOME, not /home/riparr: the login account is whatever was set in the Preparer.
 OUT="$HOME/validation"
 mkdir -p "$OUT"
 
 echo "=== 1. Rescuing first-boot journal (volatile, lost on reboot) ==="
-sudo journalctl -b -o short-precise > "$OUT/firstboot-journal.log" 2>&1
-sudo dmesg > "$OUT/firstboot-dmesg.log" 2>&1
+as_root journalctl -b -o short-precise > "$OUT/firstboot-journal.log" 2>&1
+as_root dmesg > "$OUT/firstboot-dmesg.log" 2>&1
 echo "  saved $(wc -l < "$OUT/firstboot-journal.log") journal lines"
 
 echo "=== 2. Enabling PERSISTENT logging ==="
-sudo mkdir -p /var/log/journal
-sudo systemd-tmpfiles --create --prefix /var/log/journal
-sudo mkdir -p /etc/systemd/journald.conf.d
-sudo tee /etc/systemd/journald.conf.d/99-riparr.conf >/dev/null <<'EOF'
+as_root mkdir -p /var/log/journal
+as_root systemd-tmpfiles --create --prefix /var/log/journal
+as_root mkdir -p /etc/systemd/journald.conf.d
+as_root tee /etc/systemd/journald.conf.d/99-riparr.conf >/dev/null <<'EOF'
 [Journal]
 Storage=persistent
 SystemMaxUse=200M
@@ -23,8 +26,8 @@ SystemMaxFileSize=20M
 MaxRetentionSec=1month
 ForwardToConsole=no
 EOF
-sudo systemctl restart systemd-journald
-echo "  journald storage: $(sudo journalctl --header 2>/dev/null | grep -c 'File path: /var/log/journal' || echo 0) persistent files"
+as_root systemctl restart systemd-journald
+echo "  journald storage: $(as_root journalctl --header 2>/dev/null | grep -c 'File path: /var/log/journal' || echo 0) persistent files"
 
 echo "=== 3. Hardware inventory ==="
 {
@@ -47,11 +50,11 @@ echo "=== 3. Hardware inventory ==="
 cat "$OUT/hardware-inventory.txt"
 
 echo "=== 4. Installing validation tools ==="
-sudo apt-get update -qq
-sudo apt-get install -y -qq usbutils strace hdparm sysstat ethtool iperf3 \
+as_root apt-get update -qq || exit 1
+as_root apt-get install -y -qq usbutils strace hdparm sysstat ethtool iperf3 \
     build-essential pkg-config libssl-dev libexpat1-dev zlib1g-dev \
     libavcodec-dev libavutil-dev libavformat-dev \
-    less vim curl wget git time 2>&1 | tail -3
+    less vim curl wget git time 2>&1 | tail -3 || exit 1
 # `time` is GNU time (/usr/bin/time). Debian does not ship it by default and bash's
 # `time` keyword has no -v, so makemkv-install.sh cannot measure peak build RSS
 # without it — which is the whole of the R1 measurement.
@@ -62,15 +65,17 @@ echo "=== 5. Enabling zram (R1 mitigation: memory is tight) ==="
 # Armbian manages zram itself through armbian-zram-config. Installing zram-tools on
 # top of it puts two managers on the same job, which is how you end up with no swap
 # at all rather than twice as much.
-if [ -f /etc/default/armbian-zram-config ]; then
+if [ "${RIPARR_PRESERVE_SWAP:-0}" = 1 ]; then
+  echo "  Existing swap configuration left unchanged"
+elif [ -f /etc/default/armbian-zram-config ]; then
   # Armbian already ships ENABLED=true with ZRAM_PERCENTAGE defaulting to 50, which is
   # exactly what we would have configured. Touching it would be change for its own sake.
   echo "  Armbian manages zram (armbian-zram-config, 50% by default) — left alone"
 else
-  sudo apt-get install -y -qq zram-tools 2>&1 | tail -1
-  echo "ALGO=lz4" | sudo tee /etc/default/zramswap >/dev/null
-  echo "PERCENT=50" | sudo tee -a /etc/default/zramswap >/dev/null
-  sudo systemctl restart zramswap 2>/dev/null || true
+  as_root apt-get install -y -qq zram-tools 2>&1 | tail -1
+  echo "ALGO=lz4" | as_root tee /etc/default/zramswap >/dev/null
+  echo "PERCENT=50" | as_root tee -a /etc/default/zramswap >/dev/null
+  as_root systemctl restart zramswap 2>/dev/null || true
 fi
 swapon --show 2>/dev/null || true
 free -h

@@ -11,7 +11,9 @@ libmakemkv, which is what keeps a GPL-3 codebase and a proprietary decoder at ar
 length.
 """
 import calendar
+import csv
 import datetime
+import glob
 import hashlib
 import json
 import os
@@ -92,6 +94,59 @@ def _load_manifest():
 
 
 MANIFEST = _load_manifest()
+
+
+_drive_map = None
+_drive_map_lock = threading.Lock()
+
+
+def _drive_topology():
+    devices = []
+    for path in sorted(glob.glob("/dev/sr[0-9]*")):
+        try:
+            node = os.stat(path)
+            devices.append((path, node.st_rdev, node.st_ctime_ns))
+        except OSError:
+            continue
+    return tuple(devices)
+
+
+def _drive_indexes(output):
+    indexes = {}
+    for line in output.splitlines():
+        if not line.startswith("DRV:"):
+            continue
+        try:
+            fields = next(csv.reader([line[4:]], escapechar="\\"))
+        except (csv.Error, StopIteration):
+            continue
+        if len(fields) >= 7 and fields[0].isdigit() and fields[6].startswith("/dev/"):
+            indexes[os.path.realpath(fields[6])] = int(fields[0])
+    return indexes
+
+
+def disc_source(device):
+    """Resolve a Linux optical device in MakeMKV's separate drive namespace."""
+    global _drive_map
+    if P.MOCK:
+        match = re.search(r"sr(\d+)$", device or "")
+        return "disc:%s" % (match.group(1) if match else "0")
+    if not device:
+        raise RuntimeError("Select an available optical drive before reading a disc.")
+    path = os.path.realpath(device)
+    topology = _drive_topology()
+    with _drive_map_lock:
+        if _drive_map is None or _drive_map[0] != topology or path not in _drive_map[1]:
+            binary = shutil.which("makemkvcon") or "/usr/local/bin/makemkvcon"
+            result = subprocess.run(
+                [binary, "-r", "--cache=1", "--noscan", "info", "disc:9999"],
+                capture_output=True, text=True, timeout=60)
+            _drive_map = (topology, _drive_indexes(result.stdout or ""))
+        index = _drive_map[1].get(path)
+    if index is None:
+        raise RuntimeError("MakeMKV cannot access %s. Check optical-device permissions "
+                           "and physical-drive passthrough." % device)
+    return "disc:%d" % index
 
 
 def sources(pkg):
@@ -420,6 +475,8 @@ def bridge_available():
 
 def can_install():
     """Whether this process could actually complete an install."""
+    if P.CONTAINER:
+        return False, "MakeMKV is supplied by the container image. Update the image to change it."
     if not P.IS_APPLIANCE:
         return False, "MakeMKV installs on the appliance only."
     if os.geteuid() == 0:
@@ -470,6 +527,8 @@ def start_install(accepted_eula):
     function, and the only process that can reach this function is the web service
     behind authentication.
     """
+    if P.CONTAINER:
+        return {"ok": False, "error": can_install()[1]}
     if not accepted_eula:
         return {"ok": False,
                 "error": "MakeMKV's licence agreement has to be accepted first."}

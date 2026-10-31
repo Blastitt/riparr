@@ -20,9 +20,95 @@ own dialog — the password prompt on macOS, a polkit prompt on Linux, UAC on Wi
 that single authorization covers writing the image, applying your settings and ejecting
 the card.
 
-## Both halves work on all three
+## Existing Linux Hosts
 
-**Setting a box up** — finding it on the network, installing Riparr onto it over SSH,
+The Preparer can also install Riparr on an existing Debian/Ubuntu-compatible Linux
+host with `apt` and a running systemd, including a VM. No SD card, downloaded OS
+image, or card-generated SSH key is required.
+
+Choose **Set up a box that's already running**, then **Existing Linux host**. Enter
+the existing hostname/FQDN or IPv4 address, SSH username and password, SSH port
+(normally 22), and Riparr HTTP port (normally 9797). The account must be root or
+have sudo access, using either passwordless sudo or the same login password.
+The SSH password is used in memory, not saved in the build folder or setup logs. New
+SSH host keys are remembered in `known_hosts_existing`; a changed key is refused,
+not automatically forgotten as it is when re-flashing a card.
+
+Setup checks the host before uploading, then installs the normal Riparr service,
+dependencies, bounded persistent logging, mDNS advertisement, TCP tuning and
+appliance watchdogs. **The existing hostname/DNS identity, SSH policy and swap/zram
+configuration are preserved.** The HTTP port is persisted in `/etc/default/riparr`,
+so neither a boot partition nor `riparr.conf` on an SD card is needed. Docker and
+other non-systemd environments, non-apt distributions and IPv6-only hosting are not
+supported by this path.
+
+Open the address shown after installation to create the web account, accept
+MakeMKV's licence and install it, and configure the SMB library. MakeMKV can fetch
+its checksum-verified source packages without an SD-card copy. DVD/CD tools and
+requested audio encoders use the existing system helpers. A successful share test
+saves the share and requests its kernel mount; Library reports the actual mount
+state and provides Reconnect if the NAS was unavailable. The library is remounted
+at boot.
+
+### External Optical Drive
+
+One physical ripping drive is supported. On a VM, configure physical USB/SCSI
+passthrough in the hypervisor yourself; an ISO-backed virtual CD-ROM does not
+provide the physical drive's reading and SCSI capabilities. Preparer does not
+change Proxmox configuration or drive firmware.
+
+If the guest also has a virtual CD-ROM, select the physical drive under **Your
+drive** in the web wizard, or **System > Status > Disc reading**. Riparr uses that
+drive even when it appears as `/dev/sr1` or higher, and maps it to MakeMKV's own
+drive index. A stable `/dev/disk/by-id` identity is retained when available. If a
+selected drive disappears, Riparr does not substitute another drive; reconnect or
+select it again. Without a stable identity, a reboot or reconnect may require
+reselection.
+
+The installer provides the `cdrom` group, ordinary optical udev permissions and
+SCSI generic module loading. The unprivileged `riparr` account must be able to
+access the optical device and its SCSI generic interface. Missing permissions or
+passthrough are reported by drive diagnostics. USB adapters, drive firmware and
+media must support the requested format; UHD still needs a compatible drive and
+working LibreDrive support. Setup can finish without a drive, but ripping cannot.
+
+For command-line existing-host setup:
+
+```sh
+python3 finish.py --existing-host --host media.example.lan --user ubuntu --ssh-port 22 --port 9797
+```
+
+The SSH password is prompted for, never passed as a command-line argument.
+
+### Updating an Existing Installation
+
+Return to Connect, select **Existing Linux host**, and enter the same host address
+and HTTP port with its SSH credentials. When Riparr is already running there, the
+Preparer offers **Update to** its bundled appliance version (or **Reinstall** for
+the same version). It rechecks that host before starting, so an update does not
+silently become a fresh setup if the existing service stops answering.
+
+Updates replace application files, refresh Python dependencies and shipped service
+components, then restart Riparr. They do not rerun bootstrap, install OS packages,
+recreate accounts, or reconfigure mDNS, TCP settings, optical permissions, logging
+or swap. The existing virtualenv, login, settings, history, library configuration,
+drive selection, installed MakeMKV and HTTP port are retained. MakeMKV updates
+remain a separate action in the web app.
+
+A missing or incomplete installation is refused in update-only mode. Full setup
+must be chosen explicitly to repair it. For the command-line path:
+
+```sh
+python3 finish.py --existing-host --update-only --host media.example.lan --user ubuntu --port 9797
+```
+
+Use the host's existing HTTP port; an application update cannot change it. The
+prepared-card key connection uses the same update-only action when returning to an
+already running Riparr.
+
+## Both Halves Work on All Three
+
+**SD-card setup** — finding it on the network, installing Riparr onto it over SSH,
 handing you a browser — is stdlib and SSH, and has always worked everywhere.
 
 **Writing an SD card** now does too, as of 2026-08-26. It used to be macOS-only; see

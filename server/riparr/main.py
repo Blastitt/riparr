@@ -37,6 +37,16 @@ app = FastAPI(title="Riparr", version=__version__, docs_url=_DOCS,
               openapi_url=_OPENAPI)
 
 
+@app.middleware("http")
+async def container_boundaries(request: Request, call_next):
+    if P.CONTAINER and (request.url.path.startswith("/api/wifi") or
+            request.url.path == "/api/system/components/repair" or
+            (request.url.path.startswith("/api/shares") and request.method != "GET")):
+        return JSONResponse(status_code=409, content={"detail":
+            "This deployment uses image-supplied tools, host networking and an externally mounted library."})
+    return await call_next(request)
+
+
 def _secret():
     s = db.get("session_secret")
     if not s:
@@ -100,6 +110,11 @@ def _startup():
     BK.start()
     MU.start()
     LED.start()
+
+
+@app.on_event("shutdown")
+def _shutdown():
+    RIP.stop()
 
 
 # ─────────────────────────────── auth ───────────────────────────────
@@ -257,6 +272,7 @@ def setup_state():
             "verified_at": share["verified_at"],
         },
         "hostname": P.hostname(),
+        "deployment": P.deployment(),
         "version": __version__,
     }
 
@@ -333,7 +349,9 @@ def _capacity(free_bytes, direct=None):
         # The films are not going here, so the card's size is not the limit. Say where
         # they are going instead -- the number somebody wants when rips go direct is
         # their library's free space, which the Library panel already shows.
-        mode, phrase = "direct", "Rips go straight to your library — the card isn't the limit"
+        mode = "direct"
+        phrase = ("Rips go straight to your library — available library space is the limit"
+              if P.CONTAINER else "Rips go straight to your library — the card isn't the limit")
     elif any(by_kind[k] for k in DISC_ORDER):
         mode = "burst"
         parts = []
@@ -365,6 +383,7 @@ def status(user=Depends(require_user)):
     # The user should never see a gigabyte: capacity is expressed in discs and mode.
     return {
         "version": __version__,
+        "deployment": P.deployment(),
         "hostname": P.hostname(),
         "system": P.system_status(),
         "storage": dict(storage, **_capacity(storage["free_bytes"])),
@@ -400,6 +419,19 @@ def drive_eject(user=Depends(require_user)):
     return P.eject()
 
 
+class DriveSelection(BaseModel):
+    identity: str
+
+
+@app.post("/api/drive/select")
+def drive_select(body: DriveSelection, user=Depends(require_user)):
+    try:
+        P.select_optical_drive(body.identity)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"ok": True}
+
+
 @app.post("/api/drive/close")
 def drive_close(user=Depends(require_user)):
     ok, message = P.close_tray()
@@ -423,12 +455,18 @@ def storage_speedtest(body: SpeedTest = SpeedTest(), user=Depends(require_user))
     """
     if db.active_job():
         raise HTTPException(status_code=400,
-                            detail="Riparr is working on a disc — this would fight it "
-                                   "for the card. Try again when it has finished.")
+                            detail=("Riparr is working on a disc; test staging storage after it finishes."
+                                    if P.CONTAINER else "Riparr is working on a disc — this would fight it "
+                                    "for the card. Try again when it has finished."))
     card = P.card_speed()
     lib = P.library_status()
     result = {"card": card, "library": lib}
     db.set("card_speed", card)
+    if P.CONTAINER:
+        result["recommend"] = None
+        result["why"] = ("Measured staging storage; the mounted library was not benchmarked."
+                         if card.get("write_mbs") else "Riparr could not measure staging storage.")
+        return result
 
     w = card.get("write_mbs")
     if not w:
@@ -490,7 +528,7 @@ def drive_signal_test(body: SignalTest = SignalTest(), user=Depends(require_user
         raise HTTPException(status_code=400,
                             detail="Put a disc in first — the light is blinked by "
                                    "reading one.")
-    r = P.duplicate_signal((d or {}).get("device") or "/dev/sr0", mode=body.mode)
+    r = P.duplicate_signal((d or {}).get("device"), mode=body.mode)
     return {"ok": bool(r.get("ok")), "message": r.get("message")}
 
 
@@ -743,8 +781,13 @@ def _autorip_state():
     if drives:
         d = drives[0]
         name = " ".join(x for x in (d.get("vendor"), d.get("model")) if x)
-        check("A drive to read them in", "ok",
-              "%s · %s" % (name or "Optical drive", _reads_phrase(d)))
+        if d.get("readable") is False:
+            check("A drive to read them in", "fail", "The selected drive is not accessible",
+                  "Check optical-device permissions and physical-drive passthrough.",
+                  "#/system/status")
+        else:
+            check("A drive to read them in", "ok",
+                  "%s · %s" % (name or "Optical drive", _reads_phrase(d)))
     else:
         check("A drive to read them in", "fail", "No optical drive detected",
               "A working USB bridge appears here even with no disc in the tray.",
@@ -761,6 +804,7 @@ def _autorip_state():
               "#/settings/library")
     else:
         check("Somewhere to put the files", "ok",
+              share["path"] if share.get("backend") == "directory" else
               "//%s/%s" % (share["host"], share["path"]))
 
     # 5. Room to work. Not a blocker: under D11 a small buffer means stream mode, not
@@ -838,6 +882,11 @@ async def put_settings(request: Request, user=Depends(require_user)):
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Expected an object")
     body.pop("session_secret", None)
+    if "optical_drive" in body:
+        try:
+            P.select_optical_drive(body.pop("optical_drive"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
     for k, v in body.items():
         if k in SECRET_SETTINGS and v == SECRET_MASK:
             continue                      # unchanged; do not overwrite with the mask
@@ -926,6 +975,25 @@ def _smb_tool_missing(request, exc):
     never read.
     """
     return JSONResponse(status_code=503, content={"detail": exc.message})
+
+
+@app.get("/api/library/directory")
+def directory_library(user=Depends(require_user)):
+    if not P.CONTAINER:
+        raise HTTPException(status_code=404, detail="Directory storage is not enabled.")
+    return {"path": P.LIBRARY_MOUNT, "verified": bool(db.get("directory_library_verified")),
+            "available": SH.DirectoryTransport({"path": P.LIBRARY_MOUNT}).reachable()}
+
+
+@app.post("/api/library/directory")
+def directory_library_verify(user=Depends(require_user)):
+    if not P.CONTAINER:
+        raise HTTPException(status_code=404, detail="Directory storage is not enabled.")
+    result = SH.test_directory(P.LIBRARY_MOUNT)
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result["error"])
+    db.set("directory_library_verified", int(time.time()))
+    return result
 
 
 @app.get("/api/shares")
@@ -1075,7 +1143,11 @@ def shares_create(body: ShareCreate, user=Depends(require_user)):
                        body.host, "/".join(x for x in (share, path) if x),
                        body.username, body.password)
     db.mark_share_verified(sid)
-    return {"ok": True, "id": sid, "test": result}
+    requested = P.request_remount()
+    return {"ok": True, "id": sid, "test": result, "mount_requested": requested,
+            "warning": "" if requested else
+            "The share was saved, but Riparr could not request its mount. "
+            "Reconnect it from Library, or re-run the Preparer to repair system components."}
 
 
 @app.delete("/api/shares/{share_id}")

@@ -9,11 +9,13 @@ import concurrent.futures
 import hashlib
 import os
 import re
+import shutil
 import socket
 import subprocess
 import tempfile
 import threading
 import time
+import uuid
 
 from . import platform as P
 
@@ -383,6 +385,134 @@ def _mock_path(host, share, remote):
                      (remote or "").strip("/"))
     os.makedirs(os.path.dirname(p), exist_ok=True)
     return p
+
+
+def test_directory(root):
+    destination = DirectoryTransport({"path": root})
+    if not destination.reachable():
+        return {"ok": False, "error": "The directory must be writable and contain .riparr-library "
+                "on the intended library filesystem."}
+    name = ".riparr-write-test-" + uuid.uuid4().hex
+    path = destination.describe(name)
+    content = os.urandom(4096)
+    try:
+        with open(path, "xb") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        with open(path, "rb") as source:
+            if source.read() != content:
+                return {"ok": False, "error": "Library write verification failed."}
+        return {"ok": True, "verified": True, "path": root}
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
+def transport(share):
+    return DirectoryTransport(share) if share.get("backend") == "directory" else Transport(share)
+
+
+class DirectoryTransport:
+    supports_follow_copy = False
+
+    def __init__(self, share):
+        self.root = os.path.realpath(share["path"])
+        self.marker = share.get("marker", ".riparr-library")
+
+    def _path(self, name):
+        if os.path.isabs(name) or ".." in name.replace("\\", "/").split("/"):
+            raise BadPath("Library paths must stay inside the configured directory.")
+        path = os.path.realpath(os.path.join(self.root, name))
+        if os.path.commonpath([self.root, path]) != self.root:
+            raise BadPath("A library path or symlink points outside the configured directory.")
+        return path
+
+    def reachable(self):
+        return (os.path.isdir(self.root) and os.access(self.root, os.R_OK | os.W_OK | os.X_OK)
+                and os.path.isfile(self._path(self.marker)))
+
+    def mkdirs(self, name):
+        if not self.reachable():
+            raise BadPath("The library directory or its .riparr-library marker is unavailable.")
+        os.makedirs(self._path(name), exist_ok=True)
+        return True
+
+    def size(self, name):
+        if not self.reachable():
+            return None
+        try:
+            return os.path.getsize(self._path(name))
+        except FileNotFoundError:
+            return None
+
+    def tree_sizes(self, name):
+        if not self.reachable():
+            return {}
+        base = self._path(name)
+        sizes = {}
+        for directory, _, files in os.walk(base):
+            for filename in files:
+                path = os.path.join(directory, filename)
+                relative = os.path.relpath(path, self.root)
+                sizes[os.path.relpath(path, base).replace(os.sep, "/")] = os.path.getsize(self._path(relative))
+        return sizes
+
+    def put(self, local_path, name, progress=None, cancel=None, poll=4.0):
+        self.mkdirs(os.path.dirname(name))
+        destination = self._path(name)
+        temporary = destination + ".riparr-part-" + uuid.uuid4().hex
+        total, copied = os.path.getsize(local_path), 0
+        try:
+            with open(local_path, "rb") as source, open(temporary, "xb") as output:
+                while True:
+                    if cancel is not None and cancel.is_set():
+                        return {"ok": False, "error": "Cancelled"}
+                    if not self.reachable():
+                        return {"ok": False, "error": "The library is unavailable."}
+                    chunk = source.read(1 << 20)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    copied += len(chunk)
+                    if progress:
+                        progress(copied, total)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, destination)
+            return {"ok": True, "bytes": total, "target": self.describe(name)}
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+    def fetch(self, name, local_path):
+        if not self.reachable():
+            return {"ok": False, "error": "The library is unavailable."}
+        try:
+            shutil.copyfile(self._path(name), local_path)
+            return {"ok": True}
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def delete(self, name):
+        if not self.reachable():
+            return False
+        try:
+            os.unlink(self._path(name))
+        except FileNotFoundError:
+            pass
+        return True
+
+    def describe(self, name):
+        return self._path(name)
 
 
 class Transport:

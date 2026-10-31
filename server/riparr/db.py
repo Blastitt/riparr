@@ -157,6 +157,8 @@ ADDED_COLUMNS = {
 
 # Defaults are the shipped opinion. The settings reference in docs/guide mirrors these.
 DEFAULTS = {
+    "optical_drive": None,
+    "directory_library_verified": None,
     "setup_complete": False,
     "auto_rip": False,
     # Keep the box cool while ripping: CPU ceiling and two cores during a rip
@@ -557,6 +559,10 @@ def set_password(username, password):
 # ── shares ──
 
 def list_shares():
+    from . import platform
+    if platform.CONTAINER:
+        share = default_share()
+        return [share] if share else []
     return [dict(r) for r in conn().execute(
         "SELECT id,name,host,path,username,is_default,verified_at FROM shares "
         "ORDER BY is_default DESC, name")]
@@ -585,12 +591,21 @@ def add_share(name, host, path, username, password, make_default=None):
 
 
 def default_share():
+    from . import platform
+    if platform.CONTAINER:
+        verified = get("directory_library_verified")
+        return ({"id": 0, "backend": "directory", "name": "Mounted library", "host": "",
+                 "path": platform.LIBRARY_MOUNT, "username": "", "is_default": 1,
+                 "verified_at": verified} if verified else None)
     row = conn().execute(
         "SELECT * FROM shares ORDER BY is_default DESC, id LIMIT 1").fetchone()
     return dict(row) if row else None
 
 
 def share_by_id(share_id):
+    from . import platform
+    if platform.CONTAINER:
+        return default_share()
     if not share_id:
         return None
     row = conn().execute("SELECT * FROM shares WHERE id=?", (share_id,)).fetchone()

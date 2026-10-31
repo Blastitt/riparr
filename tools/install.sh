@@ -21,6 +21,19 @@ die()  { printf '\n\033[31m✗ %s\033[0m\n\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || die "Run this with sudo:  curl -fsSL … | sudo bash"
 [ "$(uname -s)" = Linux ] || die "Riparr installs on the appliance. This is $(uname -s)."
+UPDATE_ONLY="${RIPARR_UPDATE_ONLY:-0}"
+if [ "$UPDATE_ONLY" = 1 ]; then
+  [ -f "$INSTALL_DIR/server/riparr/main.py" ] && \
+    [ -x "$INSTALL_DIR/.venv/bin/python" ] && [ -x "$INSTALL_DIR/.venv/bin/pip" ] \
+    || die "No complete Riparr installation to update. Run full setup explicitly to repair it."
+  id -u "$RIPARR_USER" >/dev/null 2>&1 && getent group cdrom >/dev/null \
+    && systemctl cat "$SERVICE" >/dev/null 2>&1 \
+    || die "The existing Riparr account or service is missing. Run full setup explicitly to repair it."
+elif [ "$UPDATE_ONLY" != 0 ]; then
+  die "RIPARR_UPDATE_ONLY must be 0 or 1."
+fi
+REQUESTED_PORT="${RIPARR_PORT:-}"
+SYSTEM_CONFIG=/etc/default/riparr
 
 # ── where the boot partition is mounted differs by OS version ──
 # config.txt only exists on Raspberry Pi. Armbian on Allwinner keeps /boot inside the
@@ -39,10 +52,27 @@ if [ -n "$BOOT" ] && [ -f "$BOOT/riparr.conf" ]; then
   . "$BOOT/riparr.conf"
   PORT="${RIPARR_PORT:-9797}"
 fi
+if [ -f "$SYSTEM_CONFIG" ]; then
+  . "$SYSTEM_CONFIG"
+  PORT="${RIPARR_PORT:-$PORT}"
+fi
+if [ "$UPDATE_ONLY" = 1 ] && [ -n "$REQUESTED_PORT" ] && [ "$REQUESTED_PORT" != "$PORT" ]; then
+  die "An application update cannot change the HTTP port. Use the existing port."
+fi
+PORT="${REQUESTED_PORT:-$PORT}"
+[[ "$PORT" =~ ^[0-9]{1,5}$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] \
+  || die "RIPARR_PORT must be between 1 and 65535."
+if [ "$UPDATE_ONLY" = 0 ] && { [ -n "$REQUESTED_PORT" ] || [ -f "$SYSTEM_CONFIG" ]; }; then
+  [ -f "$SYSTEM_CONFIG" ] || install -o root -g root -m 0644 /dev/null "$SYSTEM_CONFIG"
+  sed -i '/^RIPARR_PORT=/d' "$SYSTEM_CONFIG"
+  printf 'RIPARR_PORT=%s\n' "$PORT" >> "$SYSTEM_CONFIG"
+fi
 
 say "Installing Riparr"
 info "port $PORT · $INSTALL_DIR · $(cat /proc/device-tree/model 2>/dev/null | tr -d '\0' || echo 'unknown board')"
+MDNS_HOST="$(hostname -s).local"
 
+if [ "$UPDATE_ONLY" = 0 ]; then
 # ── 1. packages ──
 say "1/6  Packages"
 export DEBIAN_FRONTEND=noninteractive
@@ -64,8 +94,8 @@ MISSING=()
 # image can carry the daemon without the client.
 # iw reads the live association back (which SSID, what signal, which band). Without it
 # a perfectly healthy 5 GHz link reports as "not connected".
-for pkg in python3-venv python3-pip git ca-certificates avahi-daemon avahi-utils \
-           smbclient cifs-utils eject wpasupplicant iw; do
+for pkg in python3-venv python3-pip git curl ca-certificates avahi-daemon avahi-utils \
+           smbclient cifs-utils eject util-linux udev kmod wpasupplicant iw; do
   dpkg -s "$pkg" >/dev/null 2>&1 || MISSING+=("$pkg")
 done
 if [ ${#MISSING[@]} -gt 0 ]; then
@@ -88,7 +118,7 @@ systemctl enable --now avahi-daemon >/dev/null 2>&1 || true
 # is demonstrably answering, because a box that is nameless is much worse than a
 # box with a redundant responder.
 if systemctl is-active --quiet avahi-daemon && command -v avahi-resolve >/dev/null 2>&1; then
-  if avahi-resolve -n "$(hostname).local" >/dev/null 2>&1; then
+  if avahi-resolve -n "$MDNS_HOST" >/dev/null 2>&1; then
     mkdir -p /etc/systemd/resolved.conf.d
     cat > /etc/systemd/resolved.conf.d/20-riparr-avahi.conf <<'CONF'
 # Written by tools/install.sh. avahi-daemon now owns <hostname>.local; two mDNS
@@ -97,7 +127,7 @@ if systemctl is-active --quiet avahi-daemon && command -v avahi-resolve >/dev/nu
 MulticastDNS=no
 CONF
     systemctl restart systemd-resolved >/dev/null 2>&1 || true
-    ok "avahi owns $(hostname).local (resolved's responder stood down)"
+    ok "avahi owns $MDNS_HOST (resolved's responder stood down)"
   else
     info "avahi is not answering yet — leaving systemd-resolved to hold the name"
   fi
@@ -139,15 +169,29 @@ fi
 # netdev is new: wpa_supplicant's control socket is GROUP=netdev, and without it the
 # service cannot scan for networks or ask the supplicant to re-read its config. It
 # still cannot *write* the config -- that goes through the root bridge below.
+getent group cdrom >/dev/null || groupadd --system cdrom
 for g in cdrom video spi gpio netdev; do
   getent group "$g" >/dev/null && usermod -aG "$g" "$RIPARR_USER"
 done
+install -d -o root -g root -m 0755 /etc/modules-load.d
+printf 'sg\n' > /etc/modules-load.d/riparr-optical.conf
+modprobe sg 2>/dev/null || info "SCSI generic driver unavailable; check the host kernel if the drive cannot be accessed"
+udevadm control --reload-rules 2>/dev/null || true
+for optical in /sys/class/block/sr*; do
+  [ -e "$optical" ] || continue
+  udevadm trigger --action=change "$optical" 2>/dev/null || true
+  for generic in "$optical"/device/scsi_generic/*; do
+    [ -e "$generic" ] && udevadm trigger --action=change "$generic" 2>/dev/null || true
+  done
+done
+udevadm settle --timeout=10 2>/dev/null || true
 install -d -o "$RIPARR_USER" -g "$RIPARR_USER" "$DATA_DIR"
 # The dedicated staging partition (D4) does not exist on a stock image. Create
 # the directory anyway: the service declares it writable, and the status page reports
 # free space from it. Falls back to a plain directory on the root filesystem.
 install -d -o "$RIPARR_USER" -g "$RIPARR_USER" -m 0775 /srv/staging
 ok "user '$RIPARR_USER' ready; staging at /srv/staging"
+fi
 
 # ── 3. source ──
 say "3/6  Riparr"
@@ -202,7 +246,9 @@ ok "Riparr $VERSION in $INSTALL_DIR"
 # ── 4. python environment ──
 say "4/6  Python environment"
 [ -d "$INSTALL_DIR/.venv" ] || python3 -m venv "$INSTALL_DIR/.venv"
-"$INSTALL_DIR/.venv/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
+if [ "$UPDATE_ONLY" = 0 ]; then
+  "$INSTALL_DIR/.venv/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || true
+fi
 info "installing dependencies (a few minutes on a Zero 2 W)"
 "$INSTALL_DIR/.venv/bin/pip" install --quiet -r "$INSTALL_DIR/server/requirements.txt" \
   || die "Dependencies failed to install. Re-run to try again."
@@ -230,6 +276,7 @@ install -o root -g root -m 0755 "$INSTALL_DIR/packaging/apply-system.sh" \
         /usr/local/lib/riparr/apply-system.sh
 RIPARR_INSTALL_DIR="$INSTALL_DIR" /usr/local/lib/riparr/apply-system.sh
 
+if [ "$UPDATE_ONLY" = 0 ]; then
 # ── a dead host must not cost two minutes ──
 # MakeMKV contacts its own server on every invocation. That server has been returning
 # 525, and the IP it dials black-holes, so connect() sat in SYN-SENT through all six
@@ -256,6 +303,7 @@ app_UpdateEnabled = "0"
 MKSET
   chown "$RIPARR_USER":"$RIPARR_USER" "$DATA_DIR/.MakeMKV/settings.conf"
 fi
+fi
 
 # apply-system.sh already did daemon-reload and enabled every path unit and the
 # watchdog. What is left is the web service itself, which it deliberately does not
@@ -263,19 +311,21 @@ fi
 # end of that, not in the middle of it.
 ok "MakeMKV, restart, shut down, Wi-Fi and the USB-C fix all work from the web interface"
 ok "the Wi-Fi watchdog is running — a radio that dies silently gets recovered"
-systemctl enable --quiet "$SERVICE"
+if [ "$UPDATE_ONLY" = 0 ]; then
+  systemctl enable --quiet "$SERVICE"
 # The data directory belongs to the service account, all of it. A root helper that
 # opened the database before the service first ran used to leave an empty root-owned
 # riparr.db behind, and the service died on its first write ("attempt to write a
 # readonly database"). Those helpers open it read-only now; this repairs a box that was
 # already caught, and costs nothing on one that was not.
-chown -R "$RIPARR_USER":"$RIPARR_USER" "$DATA_DIR"
+  chown -R "$RIPARR_USER":"$RIPARR_USER" "$DATA_DIR"
+fi
 systemctl restart "$SERVICE"
 ok "riparr.service enabled and started"
 
 # ── 6. confirm it is actually answering ──
 say "6/6  Checking it works"
-HOST=$(hostname)
+HOST="${RIPARR_HOST_ADDRESS:-$MDNS_HOST}"
 UP=no
 for _ in $(seq 1 30); do
   if curl -fsS --max-time 2 "http://127.0.0.1:$PORT/api/setup/state" >/dev/null 2>&1; then
@@ -299,6 +349,6 @@ if [ "$UPGRADE" = yes ]; then
 else
   echo "  Open it and finish setup:"
 fi
-printf '\n      \033[1mhttp://%s.local:%s\033[0m\n\n' "$HOST" "$PORT"
+printf '\n      \033[1mhttp://%s:%s\033[0m\n\n' "$HOST" "$PORT"
 echo "  If that name doesn't resolve, use the address instead:"
 printf '      http://%s:%s\n\n' "$(hostname -I | awk '{print $1}')" "$PORT"

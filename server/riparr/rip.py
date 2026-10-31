@@ -173,6 +173,8 @@ def _autorip_ready(drives=None):
     if not drives:
         return False
     d = next((x for x in drives if x.get("present")), None)
+    if d and d.get("readable") is False:
+        return False
     if not (d and d.get("media_kind") == "cd"):
         if not P.makemkv_status().get("installed"):
             return False
@@ -198,6 +200,8 @@ def enqueue(force=False, expect=None, manual=False):
     d = next((x for x in drives if x.get("present")), None)
     if not d:
         return None, "There's no disc in the tray."
+    if d.get("readable") is False:
+        return None, "Riparr cannot access the selected drive. Check its optical-device permissions."
 
     # The *drive*, not "anything in flight". A previous rip that is still uploading
     # from the card has already given the disc back, and holding the tray shut for it
@@ -993,11 +997,8 @@ CINFO_NAME = re.compile(r'^CINFO:2,\d+,"(.*)"\s*$')
 
 
 def _disc_arg(device):
-    """MakeMKV addresses drives by its own index, not by /dev path."""
-    if not device:
-        return "disc:0"
-    m = re.search(r"sr(\d+)$", device)
-    return "disc:%s" % (m.group(1) if m else "0")
+    from . import makemkv
+    return makemkv.disc_source(device)
 
 
 _JUNK_LABEL = re.compile(r"^(?:logical_volume_id|dvd_video|bluray|untitled|unknown)$", re.I)
@@ -1183,7 +1184,7 @@ def purge_staging(need_bytes=0, keep_newest=0):
         if not share or share["id"] in transports:
             continue
         try:
-            t = SH.Transport(share)
+            t = SH.transport(share)
             if not t.reachable():
                 log.info("Not purging anything bound for %s: it is not answering, so "
                          "nothing there can be confirmed as safely stored.",
@@ -1340,9 +1341,18 @@ def _library_root(kind="movie"):
     """
     share, _ = db.destination(kind)
     share = share or {}
+    if share.get("backend") == "directory":
+        return share["path"]
     sub = (share.get("path") or "").strip("/").partition("/")[2]
     root = P.library_mount(share)
     return os.path.join(root, sub) if sub else root
+
+
+def _library_path(kind, name):
+    share, _ = db.destination(kind)
+    if share and share.get("backend") == "directory":
+        return SH.transport(share).describe(name)
+    return os.path.join(_library_root(kind), name)
 
 
 def _job_dir(job_id, direct=False, kind="movie"):
@@ -1362,7 +1372,7 @@ def _job_dir(job_id, direct=False, kind="movie"):
     the other film.
     """
     if direct:
-        d = os.path.join(_library_root(kind), ".riparr-incoming", "job-%d" % job_id)
+        d = _library_path(kind, ".riparr-incoming/job-%d" % job_id)
     else:
         d = os.path.join(STAGING, "job-%d" % job_id)
     if os.path.isdir(d):
@@ -1378,7 +1388,7 @@ def _cleanup_staging(job):
     change between a rip starting and this running, and the one thing that must not
     happen is leaving a half-written MKV inside somebody's library.
     """
-    bases = [STAGING] + [os.path.join(_library_root(k), ".riparr-incoming")
+    bases = [STAGING] + [_library_path(k, ".riparr-incoming")
                          for k in db.KINDS]
     for base in bases:
         d = os.path.join(base, "job-%d" % job["id"])
@@ -2328,7 +2338,7 @@ def _file_film_extras(job, s, transport, name, kind="movie"):
             film_dir, EXTRAS_FOLDER, sanitise(x.get("name") or "Extra")))
         try:
             if use_direct(s, kind) and x["path"].startswith(root):
-                dest = os.path.join(root, rel)
+                dest = _library_path(kind, rel)
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 os.replace(x["path"], dest)
             else:
@@ -2765,7 +2775,7 @@ def _transfer(job, s, local_path, cancel_ev):
                            title, year, source=job.get("disc_family"))
     name = "%s/%s" % (folder, rel) if folder else rel
 
-    transport = SH.Transport(share)
+    transport = SH.transport(share)
 
     # Direct mode: the film is already on the share -- MakeMKV wrote it there. What is
     # left is a rename inside one filesystem, which is instant, instead of pushing 22
@@ -2901,7 +2911,7 @@ def _place_directly(job, s, local_path, name, transport, kind="movie"):
     # Blu-ray landed in //host/OTHER/Movies instead of //host/OTHER/RiparrDumps/Movies,
     # next to the user's own folders. `_library_root()` is the same path `_job_dir`
     # writes into, which is why the two must agree.
-    dest = os.path.join(_library_root(kind), name)
+    dest = _library_path(kind, name)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     try:
         os.replace(local_path, dest)
@@ -2976,7 +2986,7 @@ def _transfer_season(job, s, base, cancel_ev):
     if not share:
         raise RipFailed("There's no library share configured, so the rip has nowhere "
                         "to go. It's still on the card.")
-    transport = SH.Transport(share)
+    transport = SH.transport(share)
     direct = use_direct(s, "tv")
     root = _library_root("tv")
 
@@ -3003,7 +3013,7 @@ def _transfer_season(job, s, base, cancel_ev):
             # filesystem, not a re-upload. `_place_directly` is not reused here because
             # it tidies the whole job directory afterwards, which on a season disc
             # would delete the episodes still waiting to be sent.
-            dest = os.path.join(root, name)
+            dest = _library_path("tv", name)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             try:
                 os.replace(local, dest)
@@ -3536,7 +3546,7 @@ def _transfer_backup(job, s, local_dir, cancel_ev):
     if not share:
         raise RipFailed("There's no library share configured, so the backup has nowhere "
                         "to go. It's still on the card.")
-    transport = SH.Transport(share)
+    transport = SH.transport(share)
     title = job.get("title") or job.get("disc_label") or "Unknown"
     base = _backup_name(job, s)
     root = _library_root("movie")
@@ -3548,7 +3558,7 @@ def _transfer_backup(job, s, local_dir, cancel_ev):
         db.stage_start(job["id"], "upload")
         db.update_job(job["id"], state="transferring", phase="Filing it in your library",
                       bytes_sent=0, bytes_total=total)
-        dest = os.path.join(root, name)
+        dest = _library_path("movie", name)
         if replace and os.path.isdir(dest):
             shutil.rmtree(dest)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -4092,7 +4102,7 @@ def _transfer_music(job, s, local_dir, cancel_ev):
     if not share:
         raise RipFailed("There's no library share configured, so the music has nowhere "
                         "to go. It's still on the card.")
-    transport = SH.Transport(share)
+    transport = SH.transport(share)
     plan = job.get("_album") or db.album_plan(job)
     title = job.get("title") or "A CD"
     base = _music_name(job, s, plan)
@@ -4113,7 +4123,7 @@ def _transfer_music(job, s, local_dir, cancel_ev):
                       bytes_sent=0, bytes_total=total, remote_name=name, album=plan)
         for rel, _size in files:
             src = os.path.join(local_dir, *rel.split("/"))
-            dest = os.path.join(root, name, *rel.split("/"))
+            dest = _library_path("music", "/".join([name, rel]))
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             try:
                 os.replace(src, dest)
@@ -4484,7 +4494,7 @@ def _reverify_season(job, plan, share, mode):
     job_id = job["id"]
 
     def run():
-        transport = SH.Transport(share)
+        transport = SH.transport(share)
         db.stage_start(job_id, "verify")
         failed = []
         for n, row in enumerate(rows, 1):
@@ -4554,7 +4564,7 @@ def reverify(job_id, mode="quick"):
         return False, "Riparr doesn't know where this one landed."
 
     def run():
-        transport = SH.Transport(share)
+        transport = SH.transport(share)
         db.stage_start(job_id, "verify")
         db.update_job(job_id, state="verifying", bytes_verified=0, error=None,
                       phase=("Checking the size on your library" if mode == "quick"
@@ -4735,7 +4745,7 @@ def sweep_incoming():
     """
     removed = 0
     for kind in db.KINDS:
-        base = os.path.join(_library_root(kind), ".riparr-incoming")
+        base = _library_path(kind, ".riparr-incoming")
         try:
             names = os.listdir(base)
         except OSError:
@@ -4776,5 +4786,7 @@ def start():
 
 def stop():
     _stop.set()
+    for cancelled in list(_cancel.values()):
+        cancelled.set()
     _wake.set()
     _send_wake.set()

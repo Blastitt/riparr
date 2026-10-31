@@ -861,21 +861,22 @@ function renderDone(installed) {
 
   if (installed) {
     // The only ending worth having: it is running, here is the link.
-    $("#done-title").textContent = "Riparr is ready";
+    $("#done-title").textContent = state.updateOnly ? "Riparr updated" : "Riparr is ready";
     $("#done-lede").textContent = state.elapsed
-      ? `Set up in ${fmtDur(state.elapsed)}. Everything below is already done.`
+      ? `${state.updateOnly ? "Updated" : "Set up"} in ${fmtDur(state.elapsed)}. Everything below is already done.`
       : "Everything below is already done.";
     $("#done-steps").innerHTML = [
-      "Card written and checked",
-      "Box found on your network",
-      "Riparr installed and running",
+      state.updateOnly ? "Connected to existing Riparr" : state.existingHost ? "Existing host connected over SSH" : "Card written and checked",
+      state.updateOnly ? "Host configuration kept" : "Box found on your network",
+      state.updateOnly ? "Riparr updated and running" : "Riparr installed and running",
     ].map(t => `<li class="was-done">${t}</li>`).join("");
     $("#done-note").innerHTML =
-      "Open it to create your login and finish the short first-run wizard. "
-      + "You won't need this app again unless you prepare another card.";
+      (state.updateOnly ? "Your login, settings, library and drive selection were kept. "
+                        : "Open it to create your login and finish the short first-run wizard. ")
+      + "You won't need this app again unless you set up another host.";
     $("#done-actions").innerHTML =
       `<button class="primary" id="open-box">Open ${esc(addr)}</button>`
-      + `<button class="ghost" id="again">Prepare another card</button>`;
+      + `<button class="ghost" id="again">${state.existingHost ? "Set up another host" : "Prepare another card"}</button>`;
   } else {
     // The card is written but the box was never set up — the user skipped it.
     $("#done-title").textContent = "Your card is ready";
@@ -935,31 +936,67 @@ function riparr_open(url) { riparr.open_url(url); }
    build folder. None of those come from writing a card, so this route is a way in to
    work that already existed rather than a second implementation of it. */
 
+function connectKey(cfg) {
+  return JSON.stringify([cfg.host, cfg.port, cfg.existing_host]);
+}
+
 function connectPreview() {
-  const h = ($("#connect-host").value || "").trim().toLowerCase() || "riparr";
-  const p = parseInt($("#connect-port").value, 10) || 9797;
-  $("#connect-preview").innerHTML = `Looking for <b>${esc(h)}.local</b>`;
-  const ok = validHost(h);
-  $("#connect-next").disabled = !ok || !state.boot.can_setup;
-  $("#connect-warn").innerHTML = state.boot.can_setup ? (ok ? "" :
-      "Names can use letters, numbers and hyphens only.")
-    : "The SSH key <b>riparr_key</b> is missing from your build folder, so there is no "
-      + "way to get into the box. Use the build folder that wrote the card, or prepare "
-      + "a card again.";
+  const existing = $("#connect-mode").value === "host";
+  const entered = ($("#connect-host").value || "").trim();
+  const h = existing ? entered : entered.toLowerCase() || "riparr";
+  const p = Number($("#connect-port").value);
+  const sshPort = Number($("#connect-ssh-port").value);
+  const user = $("#connect-user").value.trim();
+  const password = $("#connect-password").value;
+  const name = existing ? h : `${h}.local`;
+  const target = connectKey({ host: h, port: p, existing_host: existing });
+  if (state.connectTarget !== target) {
+    state.connectTarget = target;
+    state.connectUpdate = false;
+    state.connectVersion = null;
+    $("#connect-existing").hidden = true;
+    $("#connect-next").textContent = "Find it and set it up";
+  }
+  const hostOK = existing
+    ? h.length > 0 && h.length <= 253 && h.replace(/\.$/, "").split(".").every(
+        label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label))
+    : validHost(h);
+  const portOK = Number.isInteger(p) && p > 0 && p <= 65535;
+  const authOK = !existing || (user && password && Number.isInteger(sshPort)
+                               && sshPort > 0 && sshPort <= 65535);
+  const ok = !!(hostOK && portOK && authOK && (existing || state.boot.can_setup));
+  $("#connect-credentials").hidden = !existing;
+  $("#connect-sweep").hidden = existing;
+  $("#connect-manual").hidden = existing;
+  $("#connect-preview").innerHTML = `Connecting to <b>${esc(name)}</b>`;
+  $("#connect-next").disabled = !ok || !!state.connectStarting;
+  $("#connect-warn").textContent = !hostOK ? "Enter a valid hostname or IPv4 address."
+    : !portOK ? "HTTP port must be between 1 and 65535."
+    : !authOK ? "Enter the SSH port, username and password."
+    : !existing && !state.boot.can_setup ? "The SSH key from the prepared card is missing."
+    : "";
   const ssh = `ssh -i ${state.boot.assets}/riparr_key root@${h}.local`;
   $("#connect-ssh").textContent = ssh;
-  return { host: h, port: p, ok };
+  return { host: h, port: p, ok, existing_host: existing, remote_user: user,
+           password, ssh_port: sshPort, name, hostOK };
 }
 
 /* Cheap and worth doing: mDNS either answers or it does not, and knowing which before
    committing to a ten-minute setup turns "it failed" into "it is not there yet". */
 async function connectProbe() {
-  const { host, port } = connectPreview();
+  const cfg = connectPreview();
+  const { host, port, existing_host, name, hostOK } = cfg;
+  const target = connectKey(cfg);
+  const serial = state.connectProbeSerial = (state.connectProbeSerial || 0) + 1;
+  const current = () => serial === state.connectProbeSerial && connectKey(connectPreview()) === target;
   $("#connect-found").textContent = "";
+  if (!hostOK) return;
   let r;
-  try { r = await riparr.name_taken(host); } catch (e) { return; }
+  try { r = existing_host ? { taken: true, address: host }
+                         : await riparr.name_taken(host); } catch (e) { return; }
+  if (!current()) return null;
   $("#connect-found").className = "micro " + (r.taken ? "good" : "");
-  $("#connect-found").textContent = r.taken
+  $("#connect-found").textContent = existing_host ? "" : r.taken
     ? `${host}.local is answering at ${r.address}.`
     : `Nothing is answering to ${host}.local yet — that is normal if you have just `
       + `plugged it in, and the sweep below will find it anyway.`;
@@ -974,17 +1011,24 @@ async function connectProbe() {
   const box = $("#connect-existing");
   const btn = $("#connect-next");
   if (!r.taken) {
+    state.connectUpdate = false;
+    state.connectVersion = null;
     if (box) box.hidden = true;
     if (btn) btn.textContent = "Find it and set it up";
     return;
   }
   let p = null;
-  try { p = await riparr.probe_box(host, port); } catch (e) { p = null; }
+  try { p = await riparr.probe_box(host, port, existing_host); } catch (e) { p = null; }
+  if (!current()) return null;
   if (!p || !p.running) {
+    state.connectUpdate = false;
+    state.connectVersion = null;
     if (box) box.hidden = true;
     if (btn) btn.textContent = "Find it and set it up";
     return;
   }
+  state.connectUpdate = true;
+  state.connectVersion = p.version;
   // Name both versions and what happens between them. "Already running Riparr 0.2.3" is
   // a fact; "this will update it to 0.3.0, and here is everything that survives" is an
   // answer to the question the person actually has, which is whether it is safe to press.
@@ -997,20 +1041,20 @@ async function connectProbe() {
     const h = $("#connect-existing-h");
     const b = $("#connect-existing-b");
     if (cmp > 0) {
-      h.textContent = `${host}.local is running Riparr ${here}`;
+      h.textContent = `${name} is running Riparr ${here}`;
       b.innerHTML =
         `This updates it to <b>${esc(to)}</b>, in place and over the network. Your login, `
         + `settings, rip history and the MakeMKV build are all kept — nothing on the box `
         + `is erased and the card is never touched. It takes a few minutes, and Riparr `
         + `comes back on the same address.`;
     } else if (cmp === 0) {
-      h.textContent = `${host}.local is already running Riparr ${esc(here)}`;
+      h.textContent = `${name} is already running Riparr ${here}`;
       b.innerHTML =
         `That is the same version this app installs, so there is nothing to update. `
         + `Running it anyway is harmless: it reinstalls the same files and keeps your `
         + `login, settings and history exactly as they are.`;
     } else {
-      h.textContent = `${host}.local is running Riparr ${esc(here)} — newer than this app`;
+      h.textContent = `${name} is running Riparr ${here} — newer than this app`;
       b.innerHTML =
         `This app installs <b>${esc(to)}</b>, so continuing would put an older version `
         + `back. Update this app first — <b>Check for updates → now</b>, at the bottom of `
@@ -1037,6 +1081,7 @@ async function connectProbe() {
                     : cmp === 0 ? `Reinstall ${to}`
                     : `Install ${to} anyway`;
   }
+  return p;
 }
 
 /* Numeric, not lexical: "0.3.0" against "0.2.10" is not a string comparison, and this
@@ -1052,20 +1097,49 @@ function verCmp(a, b) {
 }
 
 async function startConnect() {
-  const { host, port, ok } = connectPreview();
-  if (!ok) return;
-  state.hostname = host;
-  state.port = port;
-  setRail("connect");
-  const r = await riparr.start_setup({ hostname: host, port: port });
-  if (!r.ok) {
-    $("#connect-warn").textContent = r.error || "Setup could not be started.";
-    return;
+  let cfg = connectPreview();
+  if (!cfg.ok || state.connectStarting) return;
+  const target = connectKey(cfg);
+  const expectedUpdate = state.connectUpdate;
+  const expectedVersion = state.connectVersion;
+  state.connectStarting = true;
+  try {
+    const probe = await connectProbe();
+    cfg = connectPreview();
+    if (!cfg.ok || connectKey(cfg) !== target) return;
+    if (expectedUpdate && (!probe || !probe.running)) {
+      $("#connect-warn").textContent = "The existing Riparr is no longer answering. No update or setup was started.";
+      return;
+    }
+    if (probe && probe.running && ((expectedVersion && expectedVersion !== probe.version)
+        || (!expectedUpdate && probe.installs && verCmp(probe.installs, probe.version) < 0))) {
+      $("#connect-warn").textContent = "Review the version shown above before continuing.";
+      return;
+    }
+    state.hostname = cfg.host;
+    state.port = cfg.port;
+    state.existingHost = cfg.existing_host;
+    state.updateOnly = !!(probe && probe.running);
+    state.setupUrl = null;
+    setRail("connect");
+    const result = await riparr.start_setup({ ...cfg, hostname: cfg.host, update_only: state.updateOnly });
+    if (!result.ok) {
+      $("#connect-warn").textContent = result.error || "Setup could not be started.";
+      return;
+    }
+    $("#connect-password").value = "";
+    state.logLen = -1;
+    $("#setup-title").textContent = state.updateOnly ? "Updating your Riparr" : "Setting up your Riparr";
+    show("setup");
+    pollSetup();
+  } catch (error) {
+    $("#connect-warn").textContent = error.message || "Could not check the existing host.";
+  } finally {
+    state.connectStarting = false;
+    const warning = $("#connect-warn").textContent;
+    connectPreview();
+    if (warning) $("#connect-warn").textContent = warning;
   }
-  state.logLen = -1;
-  $("#setup-title").textContent = "Setting up your Riparr";
-  show("setup");
-  pollSetup();
 }
 
 /* ── updates ────────────────────────────────────────────── */
@@ -1226,14 +1300,7 @@ async function init() {
     $("#host-note").hidden = false;
   }
 
-  // The second route can only work with the private key in the build folder. Offer it
-  // greyed with the reason rather than letting someone walk into a dead end.
-  if (!state.boot.can_setup) {
-    $("#go-connect").disabled = true;
-    $("#welcome-note").innerHTML =
-      "Setting up an existing box needs the SSH key <b>riparr_key</b> from the build "
-      + "folder that wrote its card. It isn't in " + esc(state.boot.assets) + ".";
-  }
+  if (!state.boot.can_setup) $("#connect-mode").value = "host";
   connectPreview();
 
   setRail(null);
@@ -1256,12 +1323,19 @@ async function init() {
   checkUpdate();
 }
 
-$("#go-card").onclick = () => { setRail("card"); show("card"); loadDisks(); };
+$("#go-card").onclick = () => {
+  state.existingHost = false; state.updateOnly = false; state.setupUrl = null;
+  setRail("card"); show("card"); loadDisks();
+};
 $("#go-connect").onclick = () => {
   setRail("connect"); show("connect"); connectPreview(); connectProbe();
 };
 $("#connect-host").oninput = connectPreview;
 $("#connect-port").oninput = connectPreview;
+$("#connect-mode").onchange = () => { connectPreview(); connectProbe(); };
+$("#connect-host").onblur = connectProbe;
+["#connect-user", "#connect-password", "#connect-ssh-port"].forEach(
+  selector => $(selector).oninput = connectPreview);
 $("#connect-next").onclick = startConnect;
 
 $("#rescan-disks").onclick = loadDisks;

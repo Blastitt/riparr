@@ -42,6 +42,13 @@ def _is_appliance():
 
 IS_APPLIANCE = _is_appliance()
 MOCK = not IS_APPLIANCE
+CONTAINER = os.environ.get("RIPARR_DEPLOYMENT") == "container"
+
+
+def deployment():
+    return {"container": CONTAINER, "host_management": not CONTAINER,
+            "software_install": not CONTAINER, "in_place_updates": not CONTAINER,
+            "library_backend": "directory" if CONTAINER else "smb"}
 
 
 def hostname():
@@ -163,10 +170,13 @@ STAGING = "/srv/staging" if IS_APPLIANCE else "/tmp/riparr-staging"
 _caps_cache = {}
 
 
-def _capabilities(device, vendor, model):
-    key = (device, vendor, model)
+def _capabilities(device, vendor, model, identity=""):
+    key = (device, vendor, model, identity)
     if key not in _caps_cache:
-        _caps_cache[key] = OPT.capabilities(device)
+        caps = OPT.capabilities(device)
+        if caps.get("profiles"):
+            _caps_cache[key] = caps
+        return caps
     return _caps_cache[key]
 
 
@@ -176,60 +186,90 @@ def _capabilities(device, vendor, model):
 _disc_cache = {}
 
 
-def optical_drives():
-    """Every optical drive, what it can read, and what is in it right now.
+def _optical_identity(device):
+    for path in sorted(_glob("/dev/disk/by-id/*")):
+        if os.path.realpath(path) == device:
+            return path
+    try:
+        return "node:%s:%d" % (device, os.stat(device).st_ctime_ns)
+    except OSError:
+        return ""
 
-    `present`, `media` and `label` used to be hardcoded to False/None/None on real
-    hardware -- nothing ever filled them in, and the mock branch was the only place a
-    disc was ever reported as loaded. Everything that starts a rip keys off `present`,
-    so on the appliance there was no way to start one: the watcher never fired, Auto
-    Rip was inert, and the "Rip this disc" button never rendered. `optical.py` is what
-    makes these fields answer from the hardware.
 
-    Kept cheap on purpose. The disc watcher calls this every three seconds forever, so
-    what happens per call is one ioctl the kernel answers from state it already has,
-    plus -- only when a disc is actually loaded -- the media and label lookups. The
-    drive's own capability list is cached, and MakeMKV is not consulted at all; that is
-    `libredrive_status()`, which is far too expensive to sit in a poll loop.
-    """
+def _selected_drive(drives):
+    from . import db
+    identity = db.get("optical_drive")
+    if identity:
+        return next((drive for drive in drives if drive.get("id") == identity), None)
+    return drives[0] if len(drives) == 1 else None
+
+
+def select_optical_drive(identity):
+    from . import db
+    if db.drive_busy():
+        raise ValueError("A disc is being read. Select a drive after it finishes.")
+    drives = optical_drives(all_drives=True)
+    if not any(drive.get("id") == identity for drive in drives):
+        raise ValueError("That optical drive is no longer available. Refresh and select it again.")
+    db.set("optical_drive", identity)
+    _disc_cache.clear()
+
+
+def optical_device(device=None):
+    if MOCK:
+        return device or "/dev/sr0"
+    drives = optical_drives()
+    if not drives:
+        raise ValueError("The selected optical drive is unavailable. Check its connection "
+                         "and select the physical drive in Settings.")
+    active = drives[0]["device"]
+    if device and os.path.realpath(device) != active:
+        raise ValueError("The optical drive changed. No tray command was sent.")
+    return active
+
+
+def optical_drives(all_drives=False):
+    """Inventory Linux optical devices, or return only the selected ripping drive."""
     if MOCK:
         return _mock_drives()
     out = []
     for dev in sorted(_glob("/dev/sr*")):
         name = os.path.basename(dev)
-        # The names are in sysfs; reading them saves showing a nameless drive.
+        identity = _optical_identity(dev)
+        if not identity:
+            continue
         vendor = _read("/sys/block/%s/device/vendor" % name).strip()
         model = _read("/sys/block/%s/device/model" % name).strip()
-
-        caps = _capabilities(dev, vendor, model)
+        caps = _capabilities(dev, vendor, model, identity)
         present, tray = OPT.tray_status(dev)
         uhd, known = DRV.expectation(vendor, model, can_read_bluray=caps.get("bluray"))
-
-        d = {"device": dev, "vendor": vendor, "model": model,
-             "present": present, "tray": tray,
-             "media": None, "label": None, "size_bytes": 0,
-             "reads_dvd": bool(caps.get("dvd")), "reads_bluray": bool(caps.get("bluray")),
-             "uhd": uhd, "known_as": known["name"] if known else None,
-             "form": known["form"] if known else None}
-
+        generic = ["/dev/" + os.path.basename(path) for path in
+                   _glob("/sys/class/block/%s/device/scsi_generic/*" % name)]
+        readable = all(os.access(path, os.R_OK | os.W_OK) for path in [dev] + generic)
+        drive = {"device": dev, "id": identity, "vendor": vendor, "model": model,
+                 "readable": readable, "present": present, "tray": tray,
+                 "media": None, "label": None, "size_bytes": 0,
+                 "reads_dvd": bool(caps.get("dvd")), "reads_bluray": bool(caps.get("bluray")),
+                 "uhd": uhd, "known_as": known["name"] if known else None,
+                 "form": known["form"] if known else None}
         if present:
-            # Read the disc's identity once per insertion, not once per call. The
-            # label lookup shells out to `blkid`, which opens the drive -- and this
-            # function is called by the 3s disc watcher AND by every /api/status, which
-            # the browser polls once a second while a rip runs. That had `blkid`
-            # reopening the drive underneath MakeMKV continuously: makemkvcon spent
-            # two minutes spinning on futexes having read 6 MB, and it looked like
-            # "reading the disc is slow". A closed tray cannot change discs, so the
-            # answer cannot go stale; `present` going False is the invalidation.
             cached = _disc_cache.get(dev)
-            if cached is None:
-                cached = _identify_disc(dev)
+            if cached is None or cached[0] != identity:
+                cached = (identity, _identify_disc(dev))
                 _disc_cache[dev] = cached
-            d.update(cached)
+            drive.update(cached[1])
         else:
             _disc_cache.pop(dev, None)
-        out.append(d)
-    return out
+        out.append(drive)
+    connected = {drive["device"] for drive in out}
+    for device in list(_disc_cache):
+        if device not in connected:
+            _disc_cache.pop(device, None)
+    for key in list(_caps_cache):
+        if key[0] not in connected:
+            _caps_cache.pop(key, None)
+    selected = _selected_drive(out)
+    return out if all_drives else ([selected] if selected else [])
 
 
 def _identify_disc(dev):
@@ -299,7 +339,7 @@ def _mock_drives():
     caps = {"dvd": spec["reads_dvd"], "bluray": spec["reads_bluray"]}
     uhd, known = DRV.expectation(spec["vendor"], spec["model"],
                                  can_read_bluray=caps["bluray"])
-    d = {"device": "/dev/sr0", "vendor": spec["vendor"], "model": spec["model"],
+    d = {"device": "/dev/sr0", "id": "/dev/sr0", "vendor": spec["vendor"], "model": spec["model"],
          "present": False, "tray": "empty",
          "media": None, "media_kind": None, "label": None, "size_bytes": 0,
          "reads_dvd": caps["dvd"], "reads_bluray": caps["bluray"],
@@ -369,7 +409,7 @@ def libredrive_status(drive, block=False):
     if not makemkv_status().get("installed"):
         return None
 
-    key = (drive.get("vendor"), drive.get("model"))
+    key = (drive.get("id") or drive.get("device"), drive.get("vendor"), drive.get("model"))
     if key in _libredrive_cache:
         return _libredrive_cache[key]
 
@@ -397,9 +437,9 @@ def _libredrive_probe(key, drive, ev):
     """Ask MakeMKV, once per drive model, off the request path."""
     try:
         binary = shutil.which("makemkvcon") or "/usr/local/bin/makemkvcon"
-        m = re.search(r"sr(\d+)$", drive.get("device") or "")
+        from . import makemkv
         out = _run([binary, "-r", "--cache=1", "info",
-                    "disc:%s" % (m.group(1) if m else "0")], timeout=120) or ""
+                makemkv.disc_source(drive.get("device"))], timeout=120) or ""
         _libredrive_cache[key] = DRV.parse_libredrive(out)
     except Exception:
         # A probe that blew up must not be retried on every poll for ever, but it also
@@ -479,10 +519,19 @@ def optical_diagnosis():
     `fixable` says the box can do something about it itself, and the interface offers a
     button rather than a paragraph.
     """
-    drives = optical_drives()
+    available = optical_drives(all_drives=True)
+    chosen = _selected_drive(available)
+    drives = [chosen] if chosen else []
     ports = usb_host_ports()
-    if drives:
-        return {"drives": drives, "usb": [], "hint": None, "ports": ports,
+    if available:
+        hint = None
+        if not chosen:
+            hint = ("Select the physical ripping drive. The previously selected drive may "
+                    "be disconnected; a VM's virtual CD-ROM is not a replacement.")
+        elif chosen.get("readable") is False:
+            hint = ("Riparr cannot access the selected optical drive's raw device. "
+                    "Check cdrom-group permissions, SCSI generic access and VM passthrough.")
+        return {"drives": drives, "available": available, "usb": [], "hint": hint, "ports": ports,
                 "fixable": None}
 
     usb = _usb_devices()
@@ -519,7 +568,10 @@ def optical_diagnosis():
             hint += (
                 " Check the cable first: a charge-only USB-C cable carries no data and "
                 "looks exactly like a dead drive.")
-    return {"drives": drives, "usb": usb, "hint": hint, "ports": ports,
+    if not ports["host"] and not ports["peripheral"]:
+        hint += (" If this is a VM, pass through the physical USB/SCSI drive. "
+                 "A virtual CD-ROM backed by an ISO is not sufficient.")
+    return {"drives": drives, "available": available, "usb": usb, "hint": hint, "ports": ports,
             "fixable": fixable}
 
 
@@ -540,6 +592,8 @@ CLOCK_FLOOR = 1755000000        # 2025-08-12
 
 
 def boot_dir():
+    if CONTAINER:
+        return None
     for d in BOOT_DIRS:
         if os.path.isdir(d):
             return d
@@ -582,12 +636,16 @@ POWER_REQUEST = "/run/riparr/%s.request"
 
 
 def power_available():
+    if CONTAINER:
+        return False
     return all(os.path.exists("/etc/systemd/system/riparr-%s.path" % a)
                for a in POWER_ACTIONS) and os.access("/run/riparr", os.W_OK)
 
 
 def power_action(action):
     """Ask the system to restart or shut down. Returns (ok, message)."""
+    if CONTAINER:
+        return False, "Host power is managed outside the container."
     if action not in POWER_ACTIONS:
         return False, "Unknown action."
     if MOCK:
@@ -609,6 +667,8 @@ RESTART_UNIT = "/etc/systemd/system/riparr-restart.path"
 
 
 def restart_available():
+    if CONTAINER:
+        return False
     return os.path.exists(RESTART_UNIT) and os.access(RUN_DIR, os.W_OK)
 
 
@@ -638,6 +698,8 @@ USBHOST_REQUEST = "/run/riparr/usbhost.request"
 
 
 def usb_host_available():
+    if CONTAINER:
+        return False
     return (os.path.exists("/etc/systemd/system/riparr-usbhost.path")
             and os.access("/run/riparr", os.W_OK))
 
@@ -691,7 +753,7 @@ def library_mount(share=None):
     an installed unit file and into every box already running. A second share -- films
     on the NAS, box sets on the spare drive -- gets `/srv/library-<id>` beside it.
     """
-    if not share or share.get("is_default"):
+    if CONTAINER or not share or share.get("is_default"):
         return LIBRARY_MOUNT
     return "%s-%d" % (LIBRARY_MOUNT, int(share["id"]))
 
@@ -705,6 +767,10 @@ def library_mounted(share=None):
     fills its own card and dies, so this asks the kernel, not the path.
     """
     mount = library_mount(share)
+    if CONTAINER:
+        from . import db, shares
+        destination = share or db.default_share()
+        return bool(destination and shares.transport(destination).reachable())
     if MOCK:
         return os.path.isdir(mount) and os.access(mount, os.W_OK)
     try:
@@ -816,7 +882,7 @@ _FLASH_CHUNK = 256 * 1024          # big enough that one read is audible head mo
 DUPLICATE_PATTERN = {"blinks": 3, "on": 0.22, "off": 0.22, "gap": 0.55, "groups": 3}
 
 
-def drive_flash(device="/dev/sr0", blinks=3, on=0.22, off=0.22, gap=0.55, groups=3):
+def drive_flash(device=None, blinks=3, on=0.22, off=0.22, gap=0.55, groups=3):
     """Blink the drive's own activity light by reading the disc in a rhythm.
 
     Returns {"ok", "message", "sectors"} -- `sectors` is how far the block layer says
@@ -829,6 +895,10 @@ def drive_flash(device="/dev/sr0", blinks=3, on=0.22, off=0.22, gap=0.55, groups
     if MOCK:
         return {"ok": True, "message": "Drive light flashed (simulated)", "sectors": 0}
 
+    try:
+        device = optical_device(device)
+    except ValueError as exc:
+        return {"ok": False, "message": str(exc), "sectors": 0}
     before = _sr_sectors_read(device)
     fd = None
     buf = None
@@ -912,7 +982,7 @@ def _sr_sectors_read(device="/dev/sr0"):
         return 0
 
 
-def close_tray(device="/dev/sr0", wait=25):
+def close_tray(device=None, wait=25):
     """Pull the tray in and wait for the drive to work out what is on it.
 
     The counterpart to `eject`, and the reason Re-rip can be a single click: the disc
@@ -924,8 +994,9 @@ def close_tray(device="/dev/sr0", wait=25):
     if MOCK:
         return True, "Tray closed (simulated)"
     try:
+        device = optical_device(device)
         p = subprocess.run(["eject", "-t", device], capture_output=True, text=True)
-    except OSError as e:
+    except (OSError, ValueError) as e:
         return False, "Riparr could not close the tray (%s)." % e
     if p.returncode != 0:
         return False, ((p.stderr or p.stdout).strip()
@@ -944,7 +1015,8 @@ def close_tray(device="/dev/sr0", wait=25):
     deadline = time.time() + wait
     while time.time() < deadline:
         time.sleep(2)
-        d = next((x for x in optical_drives() if x.get("present")), None)
+        d = next((x for x in optical_drives()
+              if x.get("device") == device and x.get("present")), None)
         if not d:
             continue
         if d.get("size_bytes") or d.get("label"):
@@ -954,7 +1026,7 @@ def close_tray(device="/dev/sr0", wait=25):
                    "Put the disc in and try again.")
 
 
-def tray_gesture(device="/dev/sr0", cycles=2):
+def tray_gesture(device=None, cycles=2):
     """Say something by opening and closing the tray -- the loudest thing this box owns.
 
     Unmissable across a room, and it is machinery, so it is deliberately restrained:
@@ -975,7 +1047,7 @@ def tray_gesture(device="/dev/sr0", cycles=2):
     return {"ok": ok, "message": "Opened the tray %d times." % max(1, cycles)}
 
 
-def duplicate_signal(device="/dev/sr0", mode="flash"):
+def duplicate_signal(device=None, mode="flash"):
     """Tell somebody with no screen that this disc is already in their library.
 
     Ordering matters: the light can only be blinked while the disc is still in the
@@ -998,13 +1070,14 @@ def duplicate_signal(device="/dev/sr0", mode="flash"):
     return {"ok": True, "message": " ".join(x for x in out if x)}
 
 
-def eject(device="/dev/sr0"):
+def eject(device=None):
     """Give the user their disc back. There is no physical button on the enclosure."""
     if MOCK:
         return {"ok": True, "message": "Tray ejected (simulated)"}
     try:
+        device = optical_device(device)
         p = subprocess.run(["eject", device], capture_output=True, text=True)
-    except OSError as e:
+    except (OSError, ValueError) as e:
         # Giving the disc back is a courtesy; it is never the point of the job. This
         # used to raise straight through the failure handler that called it, so a box
         # without /usr/bin/eject reported "No such file or directory: 'eject'" as the
@@ -1035,6 +1108,9 @@ def _dbm_to_quality(dbm):
 
 
 def wifi_status():
+    if CONTAINER:
+        return {"connected": False, "ssid": None, "signal": None, "available": False,
+                "reason": "Networking is provided by the Docker host."}
     """What the box is actually associated with.
 
     This used to ask `nmcli`, which does not exist here: the image runs
@@ -1253,6 +1329,17 @@ def _same(a, b):
         return False
 
 
+def _container_components():
+    binaries = ("makemkvcon", "dvdbackup", "cd-paranoia", "cd-info", "flac", "lame",
+                "opusenc", "oggenc", "bsdtar", "ffmpeg", "eject")
+    components = [{"name": name, "kind": "binary", "why": "Provided by the container image",
+                   "path": shutil.which(name) or name, "required": True,
+                   "state": "ok" if shutil.which(name) else "missing"} for name in binaries]
+    missing = sum(item["state"] == "missing" for item in components)
+    return {"components": components, "ok": not missing, "missing": missing, "stale": 0,
+            "repairable": False, "container": True}
+
+
 def system_components():
     """What is installed outside /opt/riparr, and whether it matches what shipped.
 
@@ -1266,6 +1353,8 @@ def system_components():
     `stale` matters because it is invisible from every other angle. The box reports the
     new version, the files are on disk, and the running units are last release's.
     """
+    if CONTAINER:
+        return _container_components()
     if MOCK:
         return {"components": [], "ok": True, "missing": 0, "stale": 0,
                 "repairable": False, "mock": True}
@@ -1293,6 +1382,8 @@ REMOUNT_UNIT = "/etc/systemd/system/riparr-remount.path"
 
 
 def remount_bridge_available():
+    if CONTAINER:
+        return False
     """Can this process ask the root side to remount the library shares?
 
     Same one-way door as the rest. Mounting needs privileges this service does not have
@@ -1326,6 +1417,8 @@ PROVISION_UNIT = "/etc/systemd/system/riparr-provision.path"
 
 
 def provision_bridge_available():
+    if CONTAINER:
+        return False
     """Can this process ask the root side to install the units it just downloaded?
 
     The in-app updater replaces /opt/riparr and restarts the service, but it runs as
@@ -1360,6 +1453,8 @@ def request_provision():
 
 
 def wifi_bridge_available():
+    if CONTAINER:
+        return False
     """Can this process ask the root side to rewrite wpa_supplicant's config?
 
     Same one-way door as MakeMKV, restart and shut down: the service creates one file
@@ -1551,6 +1646,8 @@ EULA_FILE = "/usr/local/lib/riparr/makemkv.eula"
 
 
 def _makemkv_eula_accepted():
+    if CONTAINER:
+        return True
     """Whether the installed MakeMKV was installed under an accepted licence.
 
     This used to look for ~/.MakeMKV/eula_accepted, which MakeMKV never creates — the

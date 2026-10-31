@@ -5,6 +5,7 @@
 # already uses. No Electron, nothing to download at runtime, and the interface (the part
 # there is most of) did not need porting.
 pywebview>=5.0
+paramiko>=3.5,<5
 
 # $6$ password hashing. macOS crypt(3) has no SHA-512 support and *silently returns a DES
 # hash* when asked for one, producing a card whose console login cannot work --

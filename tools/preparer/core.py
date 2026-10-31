@@ -1291,7 +1291,7 @@ def forget_host_keys(known_hosts, names):
 
 # ────────────────────────────── Updates ──────────────────────────────
 
-def probe_appliance(host, port=DEFAULT_PORT, timeout=4):
+def probe_appliance(host, port=DEFAULT_PORT, timeout=4, exact_target=False):
     """Is a Riparr already answering at this name, and which version?
 
     Asked before the setup route commits to anything. Running setup against a box that
@@ -1309,7 +1309,7 @@ def probe_appliance(host, port=DEFAULT_PORT, timeout=4):
     certificate, and the endpoint is the unauthenticated one the setup flow already
     polls to decide whether the box came up.
     """
-    for name in ("%s.local" % host, host):
+    for name in ((host,) if exact_target else ("%s.local" % host, host)):
         url = "http://%s:%d/api/setup/state" % (name, int(port))
         try:
             with urllib.request.urlopen(url, timeout=timeout) as r:

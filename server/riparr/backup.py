@@ -137,12 +137,14 @@ def status():
             "libdvdcss": t["libdvdcss"], "installing": installing(),
             "phase": st.get("phase"), "message": st.get("message"),
             "detail": st.get("detail"),
-            "can_install": P.MOCK or bridge_available()}
+            "can_install": not P.CONTAINER and (P.MOCK or bridge_available())}
 
 
 def request_install():
     """Ask the root side to install dvdbackup and libdvdcss. One empty file, as with
     every other privileged action: the request carries nothing the root side reads."""
+    if P.CONTAINER:
+        return {"ok": False, "error": "DVD tools are supplied by the container image."}
     if P.MOCK:
         return {"ok": True, "message": "Off-hardware: nothing to install."}
     if dvd_tools()["ready"]:
@@ -172,7 +174,7 @@ def start():
     everything at once. The state file lives in /run, so an attempt that failed is shown
     on the settings page for the rest of this boot rather than retried in a loop.
     """
-    if P.MOCK or not P.IS_APPLIANCE:
+    if P.CONTAINER or P.MOCK or not P.IS_APPLIANCE:
         return
 
     def later():
@@ -244,10 +246,8 @@ def command(family, device, dest, name="disc"):
 
 
 def _disc_arg(device):
-    if not device:
-        return "disc:0"
-    m = re.search(r"sr(\d+)$", device)
-    return "disc:%s" % (m.group(1) if m else "0")
+    from . import makemkv
+    return makemkv.disc_source(device)
 
 
 _PRGC = re.compile(r'^PRGC:\d+,\d+,"(.*)"')

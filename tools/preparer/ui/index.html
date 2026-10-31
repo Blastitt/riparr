@@ -399,19 +399,35 @@
        screen is a route to work that already existed, not new work. -->
   <section class="screen" data-screen="connect">
     <h1>Set up a box that's already running</h1>
-    <p class="lede">Use this when the card was written earlier and the app was closed,
-      or when setup stopped partway and you want to pick it back up. The box needs to be
-      powered on and on your Wi-Fi — everything from there is automatic.</p>
+    <p class="lede">Connect to a prepared card or an existing Debian/Ubuntu Linux host
+      running systemd.</p>
 
     <div class="screen-body">
     <label class="field">
-      <span>What did you name it?</span>
+      <span>Host type</span>
+      <select id="connect-mode">
+        <option value="card">Card prepared by Riparr</option>
+        <option value="host">Existing Linux host</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>Hostname or IPv4 address</span>
       <input id="connect-host" value="riparr" spellcheck="false" autocapitalize="off">
     </label>
     <label class="field">
-      <span>Port</span>
+      <span>Riparr HTTP port</span>
       <input id="connect-port" value="9797" inputmode="numeric" spellcheck="false">
     </label>
+    <div id="connect-credentials" hidden>
+      <label class="field"><span>SSH port</span>
+        <input id="connect-ssh-port" value="22" inputmode="numeric"></label>
+      <label class="field"><span>SSH username</span>
+        <input id="connect-user" value="root" autocomplete="username" spellcheck="false"></label>
+      <label class="field"><span>SSH password</span>
+        <input id="connect-password" type="password" autocomplete="current-password"></label>
+      <p class="micro">Root or sudo access is required. The host's name and swap
+        configuration are kept.</p>
+    </div>
     <div class="callout" id="connect-preview">Looking for <b>riparr.local</b></div>
     <p class="micro" id="connect-found"></p>
 
@@ -429,7 +445,7 @@
       </div>
     </div>
 
-    <p class="micro">If the name doesn't answer, this sweeps your network and offers the
+    <p class="micro" id="connect-sweep">If the name doesn't answer, this sweeps your network and offers the
       SSH key to every machine listening on port&nbsp;22. Only your box accepts it, so
       nothing else on the network is touched.</p>
 

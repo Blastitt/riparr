@@ -1,0 +1,42 @@
+services:
+  riparr:
+    image: ${RIPARR_IMAGE:-riparr:local}
+    build:
+      context: ../..
+      dockerfile: packaging/docker/Dockerfile
+    platform: linux/amd64
+    user: "${PUID:-1000}:${PGID:-1000}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 40s
+    ports:
+      - "${RIPARR_BIND_ADDRESS:-127.0.0.1}:${RIPARR_HTTP_PORT:-9797}:9797"
+    environment:
+      RIPARR_DEPLOYMENT: container
+      RIPARR_APPLIANCE: "1"
+      RIPARR_PORT: "9797"
+      RIPARR_DB: /var/lib/riparr/riparr.db
+      HOME: /var/lib/riparr
+      TZ: ${TZ:-UTC}
+    group_add:
+      - "${OPTICAL_GID:?Set the optical device numeric group ID}"
+    devices:
+      - "${OPTICAL_DEVICE:?Set the physical /dev/srN}:${OPTICAL_DEVICE}:rw"
+      - "${SCSI_DEVICE:?Set its matching /dev/sgM}:${SCSI_DEVICE}:rw"
+    volumes:
+      - data:/var/lib/riparr
+      - staging:/srv/staging
+      - type: bind
+        source: ${LIBRARY_PATH:?Set an existing mounted library directory}
+        target: /srv/library
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,nosuid,noexec,size=128m,mode=1777
+      - /run/riparr:rw,nosuid,noexec,size=4m,mode=0700,uid=${PUID:-1000},gid=${PGID:-1000}
+
+volumes:
+  data:
+  staging:
