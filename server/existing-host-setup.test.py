@@ -17,6 +17,128 @@ os.environ["RIPARR_APPLIANCE"] = "0"
 from riparr import db, main, makemkv as MK, platform as P
 
 
+def test_directory_transport():
+    from riparr import shares as SH
+    library = Path(temporary.name) / "library"
+    library.mkdir()
+    marker = library / ".riparr-library"
+    marker.touch()
+    source = Path(temporary.name) / "sample.bin"
+    source.write_bytes(b"disc data" * 1024)
+    share = {"backend": "directory", "path": str(library)}
+    destination = SH.transport(share)
+    assert isinstance(destination, SH.DirectoryTransport)
+    assert destination.reachable()
+    assert destination.put(str(source), "Movies/Film.mkv")["ok"]
+    assert destination.size("Movies/Film.mkv") == source.stat().st_size
+    assert SH.verify_remote(destination, "Movies/Film.mkv", str(source))["ok"]
+    assert destination.tree_sizes("Movies") == {"Film.mkv": source.stat().st_size}
+    for invalid in ("../outside", "/absolute", "folder/../../outside"):
+        try:
+            destination.describe(invalid)
+        except SH.BadPath:
+            pass
+        else:
+            raise AssertionError("A path escaped the library")
+    outside = Path(temporary.name) / "outside"
+    outside.mkdir()
+    (library / "escape").symlink_to(outside, target_is_directory=True)
+    try:
+        destination.describe("escape/file")
+    except SH.BadPath:
+        pass
+    else:
+        raise AssertionError("A symlink escaped the library")
+    destination.delete("Movies/Film.mkv")
+    assert destination.size("Movies/Film.mkv") is None
+    marker.unlink()
+    assert not destination.reachable()
+    try:
+        destination.put(str(source), "Movies/unavailable.mkv")
+    except SH.BadPath:
+        pass
+    else:
+        raise AssertionError("An unavailable library accepted a write")
+    assert not (library / "Movies/unavailable.mkv").exists()
+    from riparr import rip
+    marker.touch()
+    with patch.object(P, "CONTAINER", True), patch.object(P, "LIBRARY_MOUNT", str(library)):
+        assert main.directory_library_verify(user="test")["verified"]
+        destination = db.destination("movie")[0]
+        assert destination["backend"] == "directory"
+        assert P.library_mounted()
+        assert rip._library_root("movie") == str(library)
+        assert isinstance(SH.transport(destination), SH.DirectoryTransport)
+        marker.unlink()
+        assert not P.library_mounted()
+        assert not MK.can_install()[0]
+        assert not MK.start_install(False)["ok"]
+        from riparr import updater
+        assert not updater.install()["ok"]
+        assert not P.power_action("reboot")[0]
+        assert not P.provision_bridge_available()
+        assert P._makemkv_eula_accepted()
+    db.set("directory_library_verified", None)
+
+
+def test_directory_pipeline():
+    from riparr import rip
+    library = Path(temporary.name) / "pipeline-library"
+    staging = Path(temporary.name) / "pipeline-staging"
+    library.mkdir()
+    staging.mkdir()
+    (library / ".riparr-library").touch()
+    disc = dict(P._MOCK_DISCS["bluray"], size_bytes=64 * 2**20)
+    with patch.object(P, "CONTAINER", True), patch.object(P, "LIBRARY_MOUNT", str(library)), \
+            patch.object(P, "STAGING", str(staging)), patch.object(rip, "STAGING", str(staging)), \
+            patch.object(rip, "MOCK_FAST", True), patch.dict(P._MOCK_DISCS, bluray=disc), \
+            patch.dict(os.environ, RIPARR_MOCK_DISC="bluray", RIPARR_MOCK_CONTENT="movie"):
+        db.set("directory_library_verified", 123)
+        db.set("setup_complete", True)
+        db.set("verify_mode", "quick")
+        db.set("on_unknown_disc", "label")
+        for output in ("mkv", "backup"):
+            for mode in ("burst", "direct"):
+                db.set("rip_mode", output)
+                db.set("transfer_mode", mode)
+                job_id = db.create_job(state="queued", disc_label="DIRECTORY_TEST", kind="movie",
+                                       fingerprint="directory-%s-%s" % (output, mode))
+                rip._run_job(db.get_job(job_id))
+                job = db.get_job(job_id)
+                if job["state"] == "transferring":
+                    rip._send_one(job)
+                job = db.get_job(job_id)
+                assert job["state"] == "done", job
+                assert (library / job["remote_name"]).exists()
+        assert list(library.rglob("*.mkv"))
+        assert list(library.rglob("*.m2ts"))
+        from riparr import shares
+        try:
+            rip._library_path("movie", "../outside")
+        except shares.BadPath:
+            pass
+        else:
+            raise AssertionError("A direct write escaped the library")
+    db.set("directory_library_verified", None)
+    db.set("rip_mode", "mkv")
+    db.set("transfer_mode", "burst")
+
+
+def test_storage_wording():
+    with patch.object(db, "active_job", return_value=None), \
+            patch.object(P, "card_speed", return_value={"write_mbs": 10, "read_mbs": 20}), \
+            patch.object(P, "library_status", return_value={"mounted": True}):
+        for container in (False, True):
+            with patch.object(P, "CONTAINER", container):
+                result = main.storage_speedtest(main.SpeedTest(), user="test")
+                assert result["recommend"] == (None if container else "direct")
+                assert ("staging storage" in result["why"]) is container
+                capacity = main._capacity(main.WINDOW_BYTES * 2, direct=True)
+                assert capacity["mode"] == "direct"
+                assert ("the card isn't the limit" in capacity["phrase"]) is not container
+                assert ("available library space is the limit" in capacity["phrase"]) is container
+
+
 def test_production_mode():
     with patch.object(P.os.path, "exists", return_value=False):
         for value, expected in (("1", True), ("0", False)):
@@ -283,7 +405,7 @@ def test_share_mount_request():
 if __name__ == "__main__":
     try:
         db.init()
-        for test in (test_production_mode, test_web_tool_bridge, test_share_mount_request,
+        for test in (test_directory_transport, test_directory_pipeline, test_storage_wording, test_production_mode, test_web_tool_bridge, test_share_mount_request,
                      test_drive_indexes, test_drive_selection, test_drive_inventory,
                      test_installer_controls, test_application_update):
             test()

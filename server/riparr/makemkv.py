@@ -475,6 +475,8 @@ def bridge_available():
 
 def can_install():
     """Whether this process could actually complete an install."""
+    if P.CONTAINER:
+        return False, "MakeMKV is supplied by the container image. Update the image to change it."
     if not P.IS_APPLIANCE:
         return False, "MakeMKV installs on the appliance only."
     if os.geteuid() == 0:
@@ -525,6 +527,8 @@ def start_install(accepted_eula):
     function, and the only process that can reach this function is the web service
     behind authentication.
     """
+    if P.CONTAINER:
+        return {"ok": False, "error": can_install()[1]}
     if not accepted_eula:
         return {"ok": False,
                 "error": "MakeMKV's licence agreement has to be accepted first."}

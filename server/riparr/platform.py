@@ -42,6 +42,13 @@ def _is_appliance():
 
 IS_APPLIANCE = _is_appliance()
 MOCK = not IS_APPLIANCE
+CONTAINER = os.environ.get("RIPARR_DEPLOYMENT") == "container"
+
+
+def deployment():
+    return {"container": CONTAINER, "host_management": not CONTAINER,
+            "software_install": not CONTAINER, "in_place_updates": not CONTAINER,
+            "library_backend": "directory" if CONTAINER else "smb"}
 
 
 def hostname():
@@ -585,6 +592,8 @@ CLOCK_FLOOR = 1755000000        # 2025-08-12
 
 
 def boot_dir():
+    if CONTAINER:
+        return None
     for d in BOOT_DIRS:
         if os.path.isdir(d):
             return d
@@ -627,12 +636,16 @@ POWER_REQUEST = "/run/riparr/%s.request"
 
 
 def power_available():
+    if CONTAINER:
+        return False
     return all(os.path.exists("/etc/systemd/system/riparr-%s.path" % a)
                for a in POWER_ACTIONS) and os.access("/run/riparr", os.W_OK)
 
 
 def power_action(action):
     """Ask the system to restart or shut down. Returns (ok, message)."""
+    if CONTAINER:
+        return False, "Host power is managed outside the container."
     if action not in POWER_ACTIONS:
         return False, "Unknown action."
     if MOCK:
@@ -654,6 +667,8 @@ RESTART_UNIT = "/etc/systemd/system/riparr-restart.path"
 
 
 def restart_available():
+    if CONTAINER:
+        return False
     return os.path.exists(RESTART_UNIT) and os.access(RUN_DIR, os.W_OK)
 
 
@@ -683,6 +698,8 @@ USBHOST_REQUEST = "/run/riparr/usbhost.request"
 
 
 def usb_host_available():
+    if CONTAINER:
+        return False
     return (os.path.exists("/etc/systemd/system/riparr-usbhost.path")
             and os.access("/run/riparr", os.W_OK))
 
@@ -736,7 +753,7 @@ def library_mount(share=None):
     an installed unit file and into every box already running. A second share -- films
     on the NAS, box sets on the spare drive -- gets `/srv/library-<id>` beside it.
     """
-    if not share or share.get("is_default"):
+    if CONTAINER or not share or share.get("is_default"):
         return LIBRARY_MOUNT
     return "%s-%d" % (LIBRARY_MOUNT, int(share["id"]))
 
@@ -750,6 +767,10 @@ def library_mounted(share=None):
     fills its own card and dies, so this asks the kernel, not the path.
     """
     mount = library_mount(share)
+    if CONTAINER:
+        from . import db, shares
+        destination = share or db.default_share()
+        return bool(destination and shares.transport(destination).reachable())
     if MOCK:
         return os.path.isdir(mount) and os.access(mount, os.W_OK)
     try:
@@ -1087,6 +1108,9 @@ def _dbm_to_quality(dbm):
 
 
 def wifi_status():
+    if CONTAINER:
+        return {"connected": False, "ssid": None, "signal": None, "available": False,
+                "reason": "Networking is provided by the Docker host."}
     """What the box is actually associated with.
 
     This used to ask `nmcli`, which does not exist here: the image runs
@@ -1305,6 +1329,17 @@ def _same(a, b):
         return False
 
 
+def _container_components():
+    binaries = ("makemkvcon", "dvdbackup", "cd-paranoia", "cd-info", "flac", "lame",
+                "opusenc", "oggenc", "bsdtar", "ffmpeg", "eject")
+    components = [{"name": name, "kind": "binary", "why": "Provided by the container image",
+                   "path": shutil.which(name) or name, "required": True,
+                   "state": "ok" if shutil.which(name) else "missing"} for name in binaries]
+    missing = sum(item["state"] == "missing" for item in components)
+    return {"components": components, "ok": not missing, "missing": missing, "stale": 0,
+            "repairable": False, "container": True}
+
+
 def system_components():
     """What is installed outside /opt/riparr, and whether it matches what shipped.
 
@@ -1318,6 +1353,8 @@ def system_components():
     `stale` matters because it is invisible from every other angle. The box reports the
     new version, the files are on disk, and the running units are last release's.
     """
+    if CONTAINER:
+        return _container_components()
     if MOCK:
         return {"components": [], "ok": True, "missing": 0, "stale": 0,
                 "repairable": False, "mock": True}
@@ -1345,6 +1382,8 @@ REMOUNT_UNIT = "/etc/systemd/system/riparr-remount.path"
 
 
 def remount_bridge_available():
+    if CONTAINER:
+        return False
     """Can this process ask the root side to remount the library shares?
 
     Same one-way door as the rest. Mounting needs privileges this service does not have
@@ -1378,6 +1417,8 @@ PROVISION_UNIT = "/etc/systemd/system/riparr-provision.path"
 
 
 def provision_bridge_available():
+    if CONTAINER:
+        return False
     """Can this process ask the root side to install the units it just downloaded?
 
     The in-app updater replaces /opt/riparr and restarts the service, but it runs as
@@ -1412,6 +1453,8 @@ def request_provision():
 
 
 def wifi_bridge_available():
+    if CONTAINER:
+        return False
     """Can this process ask the root side to rewrite wpa_supplicant's config?
 
     Same one-way door as MakeMKV, restart and shut down: the service creates one file
@@ -1603,6 +1646,8 @@ EULA_FILE = "/usr/local/lib/riparr/makemkv.eula"
 
 
 def _makemkv_eula_accepted():
+    if CONTAINER:
+        return True
     """Whether the installed MakeMKV was installed under an accepted licence.
 
     This used to look for ~/.MakeMKV/eula_accepted, which MakeMKV never creates — the

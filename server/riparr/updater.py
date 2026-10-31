@@ -72,7 +72,8 @@ def check(repo=REPO, timeout=8):
         # two halves began versioning apart, so a constructed path now points at the
         # wrong release -- or at no release at all.
         "sums_url": _sums_url(assets),
-        "can_install": bool(payload) and P.IS_APPLIANCE,
+        "can_install": bool(payload) and P.IS_APPLIANCE and not P.CONTAINER,
+        "container": P.CONTAINER,
         "message": ("Version %s is available." % latest) if _newer(latest, __version__)
                    else "Riparr is up to date.",
     }
@@ -118,6 +119,9 @@ def install(repo=REPO):
     the running version untouched, and if the swap completes but the new version cannot
     install its dependencies, the previous directory is moved back before returning.
     """
+    if P.CONTAINER:
+        return {"ok": False, "message": "Update the Docker image and recreate the container. "
+                "Application files and dependencies are immutable in this deployment."}
     if not P.IS_APPLIANCE:
         return {"ok": False,
                 "message": "Updates install on the appliance only. "

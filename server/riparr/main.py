@@ -37,6 +37,16 @@ app = FastAPI(title="Riparr", version=__version__, docs_url=_DOCS,
               openapi_url=_OPENAPI)
 
 
+@app.middleware("http")
+async def container_boundaries(request: Request, call_next):
+    if P.CONTAINER and (request.url.path.startswith("/api/wifi") or
+            request.url.path == "/api/system/components/repair" or
+            (request.url.path.startswith("/api/shares") and request.method != "GET")):
+        return JSONResponse(status_code=409, content={"detail":
+            "This deployment uses image-supplied tools, host networking and an externally mounted library."})
+    return await call_next(request)
+
+
 def _secret():
     s = db.get("session_secret")
     if not s:
@@ -100,6 +110,11 @@ def _startup():
     BK.start()
     MU.start()
     LED.start()
+
+
+@app.on_event("shutdown")
+def _shutdown():
+    RIP.stop()
 
 
 # ─────────────────────────────── auth ───────────────────────────────
@@ -257,6 +272,7 @@ def setup_state():
             "verified_at": share["verified_at"],
         },
         "hostname": P.hostname(),
+        "deployment": P.deployment(),
         "version": __version__,
     }
 
@@ -333,7 +349,9 @@ def _capacity(free_bytes, direct=None):
         # The films are not going here, so the card's size is not the limit. Say where
         # they are going instead -- the number somebody wants when rips go direct is
         # their library's free space, which the Library panel already shows.
-        mode, phrase = "direct", "Rips go straight to your library — the card isn't the limit"
+        mode = "direct"
+        phrase = ("Rips go straight to your library — available library space is the limit"
+              if P.CONTAINER else "Rips go straight to your library — the card isn't the limit")
     elif any(by_kind[k] for k in DISC_ORDER):
         mode = "burst"
         parts = []
@@ -365,6 +383,7 @@ def status(user=Depends(require_user)):
     # The user should never see a gigabyte: capacity is expressed in discs and mode.
     return {
         "version": __version__,
+        "deployment": P.deployment(),
         "hostname": P.hostname(),
         "system": P.system_status(),
         "storage": dict(storage, **_capacity(storage["free_bytes"])),
@@ -436,12 +455,18 @@ def storage_speedtest(body: SpeedTest = SpeedTest(), user=Depends(require_user))
     """
     if db.active_job():
         raise HTTPException(status_code=400,
-                            detail="Riparr is working on a disc — this would fight it "
-                                   "for the card. Try again when it has finished.")
+                            detail=("Riparr is working on a disc; test staging storage after it finishes."
+                                    if P.CONTAINER else "Riparr is working on a disc — this would fight it "
+                                    "for the card. Try again when it has finished."))
     card = P.card_speed()
     lib = P.library_status()
     result = {"card": card, "library": lib}
     db.set("card_speed", card)
+    if P.CONTAINER:
+        result["recommend"] = None
+        result["why"] = ("Measured staging storage; the mounted library was not benchmarked."
+                         if card.get("write_mbs") else "Riparr could not measure staging storage.")
+        return result
 
     w = card.get("write_mbs")
     if not w:
@@ -779,6 +804,7 @@ def _autorip_state():
               "#/settings/library")
     else:
         check("Somewhere to put the files", "ok",
+              share["path"] if share.get("backend") == "directory" else
               "//%s/%s" % (share["host"], share["path"]))
 
     # 5. Room to work. Not a blocker: under D11 a small buffer means stream mode, not
@@ -949,6 +975,25 @@ def _smb_tool_missing(request, exc):
     never read.
     """
     return JSONResponse(status_code=503, content={"detail": exc.message})
+
+
+@app.get("/api/library/directory")
+def directory_library(user=Depends(require_user)):
+    if not P.CONTAINER:
+        raise HTTPException(status_code=404, detail="Directory storage is not enabled.")
+    return {"path": P.LIBRARY_MOUNT, "verified": bool(db.get("directory_library_verified")),
+            "available": SH.DirectoryTransport({"path": P.LIBRARY_MOUNT}).reachable()}
+
+
+@app.post("/api/library/directory")
+def directory_library_verify(user=Depends(require_user)):
+    if not P.CONTAINER:
+        raise HTTPException(status_code=404, detail="Directory storage is not enabled.")
+    result = SH.test_directory(P.LIBRARY_MOUNT)
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result["error"])
+    db.set("directory_library_verified", int(time.time()))
+    return result
 
 
 @app.get("/api/shares")

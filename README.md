@@ -4,6 +4,11 @@
 
 # Riparr
 
+A Linux amd64 Docker/Compose edition is available as an alternative to the
+Preparer. It includes the media tools and uses a host-mounted library directory.
+See [Docker setup](packaging/docker/README.md) for device passthrough, storage,
+permissions and image updates.
+
 **Rip your Blu-rays, DVDs and music CDs straight onto your NAS. One box, one cable, no babysitting.**
 
 [Get it](#get-it) · [User guide](docs/guide/README.md) · [Which drive to buy](docs/guide/01-what-you-need.md#which-drive) · [Troubleshooting](docs/guide/08-troubleshooting.md)

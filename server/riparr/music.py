@@ -1157,13 +1157,15 @@ def status(fmt=None):
             "extra": tool if tool in ON_DEMAND and not have.get(tool) else None,
             "missing": missing, "installing": installing(), "phase": st.get("phase"),
             "message": st.get("message"), "detail": st.get("detail"),
-            "can_install": P.MOCK or bridge_available()}
+            "can_install": not P.CONTAINER and (P.MOCK or bridge_available())}
 
 
 def request_install(fmt=None):
     """Ask the root side to install the CD tools, and ffmpeg too if this format needs
     it. Empty files, like every other privileged action: the request carries nothing
     the root side reads."""
+    if P.CONTAINER:
+        return {"ok": False, "error": "CD tools and encoders are supplied by the container image."}
     if P.MOCK:
         return {"ok": True, "message": "Off-hardware: nothing to install."}
     if status(fmt)["ready"]:
@@ -1230,7 +1232,7 @@ def wait_for_tools(fmt, data, cancelled, on_wait=None, timeout=25 * 60):
 def start():
     """Ask for the CD tools once per boot if they are missing -- the same two-caller
     arrangement as the DVD tools (see backup.start)."""
-    if P.MOCK or not P.IS_APPLIANCE:
+    if P.CONTAINER or P.MOCK or not P.IS_APPLIANCE:
         return
 
     def later():

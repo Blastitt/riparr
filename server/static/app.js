@@ -33,6 +33,31 @@ function toast(msg, kind = "") {
 }
 
 const state = { status: null, settings: null };
+const containerMode = () => !!(state.deployment && state.deployment.container);
+
+document.addEventListener("click", async event => {
+  const button = event.target.closest("[data-directory-test]");
+  if (!button) return;
+  button.disabled = true;
+  const output = button.parentElement.querySelector("[data-directory-result]");
+  const availability = button.closest(".section").querySelector("[data-directory-state]");
+  try {
+    await api.post("/api/library/directory", {});
+    if (output) output.textContent = "Write, read and delete verified.";
+    if (availability) availability.textContent = "Available";
+    const next = $("#w-go");
+    if (next) next.disabled = false;
+    toast("Library verified", "ok");
+  } catch (error) {
+    if (output) output.textContent = error.message;
+    if (availability) availability.textContent = "Verification failed";
+    const next = $("#w-go");
+    if (next) next.disabled = true;
+    toast(error.message, "bad");
+  } finally {
+    button.disabled = false;
+  }
+});
 
 /* ── formatting: the user should never see a gigabyte ───── */
 /* ── the current beta key ───────────────────────────────── */
@@ -281,8 +306,8 @@ const wizard = {
     $("#wz-body").innerHTML = `
       <div class="wz-step">Step 1 of 5</div>
       <h1>Create your login</h1>
-      <p class="muted">This protects the web interface. It is separate from the system
-        account you set when preparing the card.</p>
+      <p class="muted">${containerMode() ? "This protects the web interface. It is separate from your Docker host account."
+        : "This protects the web interface. It is separate from the system account you set when preparing the card."}</p>
       <div class="section"><div>
         <label class="f"><span>Username</span><input id="w-user" value="admin"></label>
         <label class="f"><span>Password</span><input id="w-pass" type="password">
@@ -321,9 +346,10 @@ const wizard = {
     $("#wz-body").innerHTML = `
       <div class="wz-step">Step 2 of 5</div>
       <h1>Disc reading</h1>
-      <p class="muted">Riparr doesn't read discs itself — <b>MakeMKV</b> does, and it's
+      ${containerMode() ? `<p class="muted">MakeMKV and the disc-reading tools are included in this image.</p>` :
+      `<p class="muted">Riparr doesn't read discs itself — <b>MakeMKV</b> does, and it's
         made by GuinpinSoft, not by us. Its licence is an agreement between you and them,
-        so Riparr won't download it until you've accepted it.</p>
+        so Riparr won't download it until you've accepted it.</p>`}
 
       <div class="section"><h2>MakeMKV
         <span class="grow"></span>
@@ -335,7 +361,9 @@ const wizard = {
                 ? `${esc(st.key_type || "beta")} — expires ${esc(st.key_expires)} (${st.days_left} days)`
                 : "none yet"}</div>
             </div>`
-          : `<p class="muted" style="margin-bottom:12px">Version ${esc(i.manifest.version)}
+            : containerMode() ? `<div class="result bad">MakeMKV is missing from this image.
+              Update or rebuild the container image.</div>`
+            : `<p class="muted" style="margin-bottom:12px">Version ${esc(i.manifest.version)}
                will be downloaded from
                <a href="${esc(i.homepage)}" target="_blank" rel="noopener">makemkv.com</a>
                and checked against a known checksum.</p>
@@ -440,6 +468,7 @@ const wizard = {
   },
 
   share() {
+    if (containerMode()) return this.directory();
     $("#wz-body").innerHTML = `
       <div class="wz-step">Step 3 of 5</div>
       <h1>Where should finished rips go?</h1>
@@ -610,6 +639,23 @@ const wizard = {
     };
   },
 
+  async directory() {
+    $("#wz-body").innerHTML = `<div class="wz-step">Step 3 of 5</div><h1>Your library</h1>`;
+    const info = await api.get("/api/library/directory");
+    $("#wz-body").innerHTML += `<div class="section"><h2>Mounted directory</h2><div>
+      <div class="kv"><div class="k">Path</div><div class="v">${esc(info.path)}</div>
+      <div class="k">State</div><div class="v" data-directory-state>${info.available ? "Available" : "Unavailable"}</div></div>
+      <p class="help">Managed by Docker. Change the library bind mount in your Docker/Compose
+        configuration and recreate the container; the path cannot be edited in Riparr.</p>
+      <div class="btn-row"><button class="btn" data-directory-test>Test write</button>
+        <span data-directory-result>${info.verified ? "Previously verified" : "Not verified"}</span></div>
+      </div></div><div class="wz-actions"><div class="grow"></div>
+      <button class="btn" id="w-skip">Set this up later</button>
+      <button class="btn primary" id="w-go" ${info.verified && info.available ? "" : "disabled"}>Continue</button></div>`;
+    $("#w-skip").onclick = () => this.next();
+    $("#w-go").onclick = () => this.next();
+  },
+
   async layout() {
     const s = await api.get("/api/settings");
     $("#wz-body").innerHTML = `
@@ -721,6 +767,7 @@ const wizard = {
    user and GuinpinSoft, so the button says so rather than carrying the old consent
    over silently. */
 function mkUpgradeBlock(mk) {
+  if (containerMode()) return `<div class="alert">MakeMKV is managed by the container image.</div>`;
   if (!mk.upgrade) return "";
   return `
     <div class="alert warn" style="margin-bottom:14px">
@@ -1146,6 +1193,12 @@ function applyAdjusted(res) {
    leaving somebody hunting for a deep option that is deliberately absent. */
 function verifyNote(direct) {
   const s = state.settings || {};
+  if (containerMode()) {
+    if (s.verify_mode === "off") return "Nothing is checked after writing to the library.";
+    if (s.verify_mode === "deep") return "Reads the library file back and compares it with the staging copy; additional staging space is required.";
+    return direct ? "Checks the library file size. Deep verification is unavailable without a separate staging copy."
+                  : "Compares the library file size with the staging copy.";
+  }
   if (s.verify_mode === "off") return "Nothing is checked after the upload.";
   if (s.verify_mode === "deep")
     return "Reads the whole film back off the share — roughly doubles the time and needs as much free space again.";
@@ -1540,29 +1593,32 @@ function ripOptions() {
   const lib = (state.status && state.status.library) || {};
   const direct = s.transfer_mode === "direct";
   const card = s.card_speed || {};
+  const docker = containerMode();
   return `
   <div class="rip-opts">
     <div class="ropt">
       <div class="ropt-head">
         <span class="ropt-k">${icon("hard-drive")} Each rip goes</span>
         <button class="btn sm" id="ar-speedtest"
-                title="Measures your card and says which of these suits it">Test my card</button>
+                title="${docker ? "Measures the storage backing your staging volume" : "Measures your card and says which of these suits it"}">${docker ? "Test staging storage" : "Test my card"}</button>
         <select id="ar-route" title="Applies to every rip, automatic or started by hand">
           ${opt("direct", "straight to your library", s.transfer_mode)}
-          ${opt("auto", "onto the card first, then sent", s.transfer_mode)}
+          ${opt("auto", docker ? "into staging first, then copied to the library" : "onto the card first, then sent", s.transfer_mode)}
         </select>
       </div>
-      <p class="ropt-why">${
-        direct
+      <p class="ropt-why">${docker
+        ? direct ? "Writes to the mounted library without keeping a staging copy; library free space still limits each rip."
+                 : "Keeps a recoverable copy in staging storage before copying it to the mounted library."
+        : direct
           ? `No size limit, so a Blu-ray fits whatever card you have, and the card stops
              wearing out.${card.write_mbs
                ? ` Yours writes at about <b>${esc(String(card.write_mbs))} MB/s</b>.` : ""}`
-          : `The rip is safe on the card before anything is sent, so a network that drops
-             mid-disc costs a re-send rather than a re-rip.`}</p>
+          : "The rip is safe on the card before anything is sent, so a network that drops mid-disc costs a re-send rather than a re-rip."}</p>
       ${!lib.mounted && direct ? `<p class="ropt-warn">${icon("triangle-exclamation")}
-        <span>Your library isn't connected, so rips will stage on the card until it is.
-        <button class="btn tiny" data-remount>Reconnect</button>
-        <span class="test-out" data-remount-out></span></span></p>` : ""}
+        <span>${docker ? "Your library is unavailable, so rips use staging storage where space permits. Restore the host library mount and recreate the container if needed; Docker manages this mount."
+                       : "Your library isn't connected, so rips will stage on the card until it is."}
+        ${docker ? `<a href="#/settings/library">Check library</a>` : `<button class="btn tiny" data-remount>Reconnect</button>
+        <span class="test-out" data-remount-out></span>`}</span></p>` : ""}
       <span class="test-out ropt-out" id="ar-speed-out"></span>
     </div>
 
@@ -1911,7 +1967,10 @@ views.settings = async (sub = "library") => {
   const s = state.settings = await api.get("/api/settings");
   const body = await (settingsPages[sub] || settingsPages.library)(s);
   const tab = SETTINGS_TABS.find(([k]) => k === sub) || SETTINGS_TABS[0];
-  return `${head(tab[1], tab[2])}${body}`;
+  const subtitle = containerMode() && sub === "library" ? "Mounted library storage, folders and file naming."
+    : containerMode() && sub === "network" ? "Networking is managed by Docker and the host."
+    : tab[2];
+  return `${head(tab[1], subtitle)}${body}`;
 };
 
 const settingsPages = {};
@@ -1924,6 +1983,23 @@ const settingsPages = {};
    share *and* its own folder, which makes "two folders on one share" and "two
    different machines" the same control rather than two features. */
 settingsPages.library = async (s) => {
+  if (containerMode()) {
+    const info = await api.get("/api/library/directory");
+    const folders = [["movie_folder", "Films"], ["tv_folder", "Television"],
+                     ["music_folder", "Music"], ["data_folder", "Data discs"]];
+    return `<div class="section"><h2>Mounted library</h2><div>
+      <div class="kv"><div class="k">Path</div><div class="v">${esc(info.path)}</div>
+      <div class="k">State</div><div class="v" data-directory-state>${info.available ? "Available" : "Unavailable"}</div></div>
+      <p class="help">The library root is managed by Docker/Compose, not this page.
+        Change the bind mount and recreate the container to change it; folder names below remain editable here.</p>
+      <div class="btn-row"><button class="btn" data-directory-test>Test write</button><span data-directory-result></span></div>
+      ${folders.map(([key, label]) => `<label class="f"><span>${label} folder</span>
+        <input data-set="${key}" value="${esc(s[key] || "")}"></label>`).join("")}
+      </div></div><div class="section"><h2>Naming</h2><div>
+      <label class="f"><span>Film file name</span><input data-set="movie_template" value="${esc(s.movie_template)}"></label>
+      <label class="f"><span>Episode file name</span><input data-set="tv_template" value="${esc(s.tv_template)}"></label>
+      ${saveBar()}</div></div>`;
+  }
   const { shares, destinations, library } = await api.get("/api/shares");
   state.libShares = shares;
   const dest = (kind) => destinations[kind] || {};
@@ -2120,6 +2196,8 @@ function musicQualityHelp(f) {
 function musicToolsLine(t) {
   if (!t) return "";
   if (t.ready) return `<span class="test-out ok">Music CDs are ready.</span>`;
+  if (containerMode()) return `<span class="test-out warn">CD readers and encoders are supplied by the Docker image.
+    Update or rebuild the image to restore missing tools; installation from this page is disabled.</span>`;
   if (t.extra && !t.installing && t.phase !== "error") {
     return `<span class="test-out warn">AAC and ALAC need ffmpeg, an extra install of
         about 150 MB. It happens by itself when the first CD needs it, or now:</span>
@@ -2299,8 +2377,9 @@ settingsPages.ripping = async (s) => {
   </div></div>
 
   <div class="section"><h2>Transfer</h2><div>
-    ${sw("cool_running", "Keep the box cool while ripping", s.cool_running !== false,
-        "Small boards run hot when ripping, and some (the Orange Pi Zero 2W among them) "
+    ${sw("cool_running", containerMode() ? "Pause ripping if the host is hot" : "Keep the box cool while ripping", s.cool_running !== false,
+      containerMode() ? "If host temperature readings are available, pauses between episodes when hot. Docker does not manage CPU speed or host thermal watchdogs."
+      : "Small boards run hot when ripping, and some (the Orange Pi Zero 2W among them) "
         + "never slow themselves down. While a disc is being read, this holds the CPU "
         + "at a lower speed on two cores — which doesn't slow a rip, because the drive "
         + "and the network are the limit — and pauses between episodes if the box gets "
@@ -2309,11 +2388,15 @@ settingsPages.ripping = async (s) => {
     <label class="f"><span>Mode</span>
       <select data-set="transfer_mode">
         ${opt("direct", "Straight to your library (recommended)", s.transfer_mode)}
-        ${opt("auto", "Onto the card first, then sent", s.transfer_mode)}
+        ${opt("auto", containerMode() ? "Into staging first, then copied to the library" : "Onto the card first, then sent", s.transfer_mode)}
         ${opt("burst", "Always burst", s.transfer_mode)}
-        ${opt("stream", "Always stream", s.transfer_mode)}
+        ${containerMode() ? `<option value="stream" disabled ${s.transfer_mode === "stream" ? "selected" : ""}>Streaming unavailable for Docker directory storage</option>`
+             : opt("stream", "Always stream", s.transfer_mode)}
       </select>
-      <span class="help"><b>Straight to your library</b> writes the film to your share
+      <span class="help">${containerMode() ? `<b>Straight to your library</b> writes into the mounted directory without a separate staging copy.
+        <b>Into staging first</b> keeps a recoverable copy before delivery. Both the library and staging volume need enough free space.
+        If the library is unavailable, staging is used where space permits. Restore host mounts through Docker/host configuration, not Riparr.
+        Streaming is disabled because this directory backend transfers completed files.` : `<b>Straight to your library</b> writes the film to your share
         as it comes off the disc, so nothing is staged on the card. On the reference
         board that is about <b>18 MB/s against the card's 9.4</b> — so it is roughly
         twice as fast — and it removes the card as a size limit, which is the only
@@ -2325,7 +2408,7 @@ settingsPages.ripping = async (s) => {
         <br><br>The trade: the rip needs the network for its whole length rather than
         only at the end, and there is one copy rather than two, so verification checks
         the size rather than hashing. <b>Onto the card first</b> is the answer if your
-        NAS sleeps, your Wi-Fi is patchy, or you want deep verification.</span></label>
+        NAS sleeps, your Wi-Fi is patchy, or you want deep verification.`}</span></label>
     <label class="f"><span>Verify after transfer</span>
       <select data-set="verify_mode">
         ${opt("quick", "Quick — check the size", s.verify_mode)}
@@ -2333,7 +2416,9 @@ settingsPages.ripping = async (s) => {
           : opt("deep", "Deep — read every byte back", s.verify_mode)}
         ${opt("off", "Don't verify", s.verify_mode)}
       </select>
-      <span class="help">Quick asks the share how big the file is and compares it with
+      <span class="help">${containerMode() ? `Quick checks the library file size.
+        Deep reads it back and compares it with the separate staging copy, requiring additional staging space.
+        ${s.transfer_mode === "direct" ? "Deep is unavailable with direct-to-library output; choose staging first to keep a comparison copy." : ""}` : `Quick asks the share how big the file is and compares it with
         what was sent. It is nearly free and catches what actually goes wrong — a
         truncated transfer, a share that filled up, a write that was refused.
         ${s.transfer_mode === "direct"
@@ -2348,7 +2433,7 @@ settingsPages.ripping = async (s) => {
              whole rip again: it roughly doubles the time after a rip and needs
              <b>as much free space on the card as the film itself</b>, on top of the
              rip. It is the one reason to want a big card. Worth it for an archive you
-             will never re-rip; overkill for most.`}</span></label>
+             will never re-rip; overkill for most.`}`}</span></label>
     ${sw("keep_local_copy", "Keep the local copy", s.keep_local_copy,
         "Retains the rip until the space is needed, so a downstream problem is a re-copy rather than a re-rip.")}
   </div></div>
@@ -2608,7 +2693,7 @@ settingsPages.connect = async (s) => {
       watching for work instead of straight into your library.</p>
     <label class="f" style="margin-top:14px"><span>Watch folder</span>
       <input data-set="watch_folder" value="${esc(s.watch_folder)}" placeholder="/Media/_incoming">
-      <span class="help">A path on your library share. Tdarr and Unmanic both work this
+      <span class="help">${containerMode() ? "A path inside the mounted library directory." : "A path on your library share."} Tdarr and Unmanic both work this
         way: they pick the file up, transcode it, and put the result wherever they are
         configured to. Leave this empty to write straight to the folders on the
         <a href="#/settings/library">Library</a> page.</span></label>
@@ -2723,6 +2808,10 @@ function testRow(channel) {
    phone's has been since about 2007, and wpa_supplicant joins the best one it can
    see. */
 settingsPages.network = async (s) => {
+  if (containerMode()) return `<div class="section"><h2>Docker networking</h2><div>
+    <div class="kv"><div class="k">Management</div><div class="v">Host-managed</div></div>
+    <p class="help">Wi-Fi status, network editing and recovery controls are unavailable in the Docker version.
+      Change networking on the Docker host or in Docker/Compose configuration.</p></div></div>`;
   const w = await api.get("/api/wifi");
   // Clamped for display only -- the value is validated server-side too. Without this a
   // half-typed "" in the box makes the derived ladder read "reconnects at NaN".
@@ -3141,7 +3230,7 @@ systemPages.status = async () => {
         ${sys.board ? `<div class="k">Prepared as</div><div class="v">${esc(sys.board)}</div>` : ""}
         <div class="k">Operating system</div><div class="v">${esc(sys.os)}</div>
         <div class="k">Kernel</div><div class="v">${esc(sys.kernel || "—")}</div>
-        <div class="k">Mode</div><div class="v">${sys.mock ? "Development (simulated)" : "Appliance"}</div>
+        <div class="k">Mode</div><div class="v">${containerMode() ? "Container" : sys.mock ? "Development (simulated)" : "Appliance"}</div>
         <div class="k">Memory</div><div class="v">${sys.memory_used_mb} of ${sys.memory_total_mb} MB</div>
         <div class="k">Temperature</div><div class="v">${sys.cpu_temp_c ?? "—"} °C${
           (sys.thermal || {}).state && sys.thermal.state !== "normal"
@@ -3208,6 +3297,10 @@ systemPages.status = async () => {
     </div>
 
     <div class="section"><h2>Network</h2>
+      ${containerMode() ? `<div class="kv"><div class="k">Connection</div><div class="v">Docker-managed</div>
+        <div class="k">Web address</div><div class="v">${esc(location.host)}</div>
+        <div class="k">Library</div><div class="v">${esc(st.library && st.library.mount || "Not configured")}</div></div>
+        <p class="help">Wi-Fi status and controls are unavailable in Docker. Networking is managed on the host.</p>` : `
       <div class="kv">
         <div class="k">Wi-Fi</div><div class="v">${st.wifi.ssid
           ? `${esc(st.wifi.ssid)}${st.wifi.band ? ` <span class="muted">· ${esc(st.wifi.band)} GHz</span>` : ""}`
@@ -3218,7 +3311,7 @@ systemPages.status = async () => {
         <div class="k">Hostname</div><div class="v">${esc(st.hostname)}.local</div>
         <div class="k">Share</div><div class="v">${st.share
           ? `//${esc(st.share.host)}/${esc(st.share.path)}` : "not configured"}</div>
-      </div>
+      </div>`}
     </div>
 
     <div class="section"><h2>More Info</h2>
@@ -3278,10 +3371,11 @@ function healthMessages(st) {
       href: "#/system/status", action: "Details" });
 
   if (!st.share)
-    out.push({ level: "warn", message: "No network share configured, so finished rips have nowhere to go.",
-               href: "#/settings/share", action: "Add a share" });
+    out.push({ level: "warn", message: containerMode() ? "The mounted library directory has not been verified."
+                 : "No network share configured, so finished rips have nowhere to go.",
+               href: "#/settings/library", action: containerMode() ? "Verify library" : "Add a share" });
 
-  if (!st.wifi.connected)
+  if (!containerMode() && !st.wifi.connected)
     out.push({ level: "bad", message: "Wi-Fi is not connected.",
                href: "#/settings/network", action: "Network settings" });
 
@@ -3307,6 +3401,11 @@ function healthMessages(st) {
    This is the panel that names it instead. */
 function componentsPanel(c) {
   if (!c || c.mock) return "";
+  if (c.container) return `<div class="section"><h2>Image-provided tools</h2><div>
+    <table><tbody>${(c.components || []).map(item => `<tr><td>${esc(item.name)}</td>
+      <td>${item.state === "ok" ? "Available" : "Missing"}</td></tr>`).join("")}</tbody></table>
+    <p class="help">Installed by the Docker image. Runtime installation and systemd repair are disabled;
+      update or rebuild the image to change these tools.</p></div></div>`;
   const bad = (c.components || []).filter(x => x.state !== "ok");
 
   if (!bad.length) {
@@ -3421,9 +3520,10 @@ systemPages.backup = async () => {
       <input type="file" id="bk-file" accept=".zip,application/zip,.json,application/json" class="hidden">
     </div>
     <div class="alert">Backups are written to <code>${esc(b.path)}</code> and hold your
-      settings, shares and disc history — everything that is not re-derivable. A backup
+      ${containerMode() ? "settings, library folder choices and disc history" : "settings, shares and disc history"} — everything that is not re-derivable. A backup
       runs on its own every seven days and the last ${b.keep} are kept.
-      <br>Share passwords are deliberately left out, so a restore asks for them again.</div>
+      <br>${containerMode() ? "Docker volume, device and network configuration must be backed up separately."
+                : "Share passwords are deliberately left out, so a restore asks for them again."}</div>
     <div class="section"><h2>Backups</h2>
       <table>
         <thead><tr><th class="stat"></th><th>Name</th><th>Size</th><th>Time</th>
@@ -3437,6 +3537,11 @@ systemPages.backup = async () => {
 systemPages.updates = async () => {
   const [u, mk] = await Promise.all([api.get("/api/update"),
                                       api.get("/api/makemkv").catch(() => null)]);
+  if (containerMode()) return `<div class="section"><h2>Container image</h2><div>
+    <div class="kv"><div class="k">Riparr</div><div class="v">${esc(u.current)}</div>
+    <div class="k">MakeMKV</div><div class="v">${esc(mk && mk.status.version || "Missing")}</div>
+    <div class="k">Updates</div><div class="v">Image-managed</div></div>
+    </div></div>`;
   const kind = u.status === "update" ? "warn" : u.status === "current" ? "ok" : "";
   return `
     <div class="toolbar">
@@ -3526,7 +3631,7 @@ systemPages.logs = async () => {
     <div class="alert">Log files are in <code>${esc(l.path)}</code>.
       <br><code>riparr.txt</code> is the ordinary record; <code>riparr.debug.txt</code>
       keeps everything and is the one to send if you are asking for help. Each is capped
-      at 1 MB and rotated five times, because every write is a write to the SD card.</div>
+      at 1 MB and rotated five times${containerMode() ? " to limit persistent-state storage use." : ", because every write is a write to the SD card."}</div>
     <div class="section"><h2>Files</h2>
       <table>
         <thead><tr><th>Filename</th><th>Size</th><th>Last Write Time</th>
@@ -3579,7 +3684,7 @@ function navBadges() {
   else if (m.days_left != null && m.days_left < 8) sys++;
   else if (m.key_stale) sys++;
   if (!st.share) sys++;
-  if (!st.wifi.connected) sys++;
+  if (!containerMode() && !st.wifi.connected) sys++;
   if (sys) b.system = sys;
   return b;
 }
@@ -3600,7 +3705,7 @@ function renderSidebar(section, sub) {
   }).join("") + `<div class="side-foot">
     <div id="side-makemkv"></div>
     <div class="cap">${
-      st ? `${capacityPhrase(st.storage)}<br><span class="muted">${esc(st.hostname)}.local</span>` : ""
+      st ? `${capacityPhrase(st.storage)}<br><span class="muted">${esc(containerMode() ? location.host : st.hostname + ".local")}</span>` : ""
     }</div>
     <div class="side-ver">${st && st.version ? `Riparr ${esc(st.version)}` : ""}</div>
   </div>`;
@@ -4020,7 +4125,8 @@ function wireContent(section, sub) {
   $$("[data-restore]").forEach(b => b.onclick = async () => {
     const name = b.dataset.restore;
     if (!confirm(`Restore ${name}?\n\nThis overwrites your current settings. `
-                 + `Share passwords are not in a backup and will have to be re-entered.`)) return;
+                  + (containerMode() ? "Docker volume, device and network configuration is managed separately."
+                                     : "Share passwords are not in a backup and will have to be re-entered."))) return;
     try {
       const r = await api.post(`/api/system/backups/${encodeURIComponent(name)}/restore`);
       toast(`Restored ${r.settings} setting(s). ${r.note}`, "ok");
@@ -4097,7 +4203,7 @@ function wireContent(section, sub) {
               ? (changed.verify_mode === "quick"
                    ? "Rips go straight to your library. Deep checking needs two copies, so it's a size check now."
                    : "Rips go straight to your library")
-              : "Rips are cached on the card first", "ok");
+              : containerMode() ? "Rips use staging storage before copying to the library" : "Rips are cached on the card first", "ok");
       route();
     } catch (e) { toast(e.message, "bad"); }
   };
@@ -4118,7 +4224,7 @@ function wireContent(section, sub) {
       if (state.settings) state.settings.card_speed = c;
       if (r.recommend && r.recommend !== (state.settings || {}).transfer_mode) {
         if (confirm(`${r.why}\n\nSwitch to ${
-            r.recommend === "direct" ? "writing straight to your library" : "caching on the card"}?`)) {
+            r.recommend === "direct" ? "writing straight to your library" : containerMode() ? "using staging storage" : "caching on the card"}?`)) {
           const saved = await api.put("/api/settings", { transfer_mode: r.recommend });
           if (state.settings) state.settings.transfer_mode = r.recommend;
           applyAdjusted(saved);
@@ -4792,7 +4898,7 @@ function renderChrome() {
   else if (m.key_stale)
     pills.push(`<span class="pill warn">Newer key published</span>`);
   if (!st.share) pills.push(`<span class="pill warn">No share</span>`);
-  if (!st.wifi.connected) pills.push(`<span class="pill bad">Offline</span>`);
+  if (!containerMode() && !st.wifi.connected) pills.push(`<span class="pill bad">Offline</span>`);
   $("#health-pills").innerHTML = pills.join("");
 }
 
@@ -4924,6 +5030,9 @@ async function boot() {
     }
   }
   hideWaiting();
+  state.deployment = setup.deployment || {};
+  $("#sys-reboot").hidden = containerMode();
+  $("#sys-poweroff").hidden = containerMode();
 
   if (!setup.has_users) { wizard.step = 0; wizard.render(); return; }
 

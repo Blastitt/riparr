@@ -383,8 +383,9 @@ def _task_update_check():
         notify.send(
             "update_available",
             title="Riparr %s is available" % latest,
-            body=("You're on %s. System → Updates installs it and restarts, and "
-                  "nothing is changed until you say so." % r.get("current", "?")))
+            body=("Update the Docker image and recreate the container." if P.CONTAINER else
+                "You're on %s. System → Updates installs it and restarts, and "
+                "nothing is changed until you say so." % r.get("current", "?")))
         db.set("last_update_announced", latest)
     return "Update check: %s available" % latest
 
@@ -450,6 +451,8 @@ def _task_share_check():
     means the health check passes while the machine half the rips are bound for has
     been asleep for a week.
     """
+    if P.CONTAINER:
+        return "Library directory available" if P.library_mounted() else "Library directory unavailable"
     ids = db.shares_in_use()
     if not ids:
         return "No share configured"
