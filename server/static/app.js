@@ -4,18 +4,63 @@ const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 
 const api = {
-  async call(method, path, body) {
-    const r = await fetch(path, {
-      method,
-      headers: body ? { "Content-Type": "application/json" } : {},
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    if (r.status === 401) { showGate(); throw new Error("Not signed in"); }
-    const data = r.headers.get("content-type")?.includes("json") ? await r.json() : null;
-    if (!r.ok) throw new Error(data?.detail || `Request failed (${r.status})`);
-    return data;
+  reads: new Map(), cache: new Map(), controllers: new Set(),
+  async call(method, path, body, options = {}) {
+    const read = method === "GET";
+    if (!read && connection.status !== "connected" && !/\/api\/(auth|setup\/user)/.test(path)) {
+      throw new Error("Server connection is unavailable. Reconnect before sending this command.");
+    }
+    const controller = new AbortController();
+    if (read) this.controllers.add(controller);
+    const timer = setTimeout(() => controller.abort(), options.timeout || (read ? 15000 : 1200000));
+    const record = options.etag ? this.cache.get(path) : null;
+    const headers = body ? { "Content-Type": "application/json" } : {};
+    if (record) headers["If-None-Match"] = record.tag;
+    try {
+      const response = await fetch(path, { method, headers, signal: controller.signal,
+        body: body ? JSON.stringify(body) : undefined });
+      if (response.status === 401) {
+        polling.pause(); resetPrivateViews(); showGate();
+        throw Object.assign(new Error("Not signed in"), { status: 401 });
+      }
+      if (response.status === 304 && record) {
+        connection.contact();
+        const data = { ...record.data };
+        if (response.headers.has("X-Riparr-Sources")) data.sources = JSON.parse(response.headers.get("X-Riparr-Sources"));
+        return data;
+      }
+      const data = response.headers.get("content-type")?.includes("json") ? await response.json() : null;
+      if (!response.ok) throw Object.assign(new Error(data?.detail || `Request failed (${response.status})`), {
+        status: response.status, transient: response.status >= 500 || response.status === 429 });
+      connection.contact();
+      if (options.etag && response.headers.has("ETag")) this.cache.set(path, { tag: response.headers.get("ETag"), data });
+      if (!read) {
+        this.cache.clear();
+        markSaved(path, body);
+      }
+      return data;
+    } catch (error) {
+      if (controller.expectedAbort) error.cancelled = true;
+      else if (controller.signal.aborted || error instanceof TypeError) error.transient = true;
+      if (error.transient && !options.optional) connection.fail(error);
+      throw error;
+    } finally {
+      clearTimeout(timer); this.controllers.delete(controller);
+    }
   },
-  get:  (p)    => api.call("GET", p),
+  get(path, options = {}) {
+    if (this.reads.has(path)) return this.reads.get(path);
+    const promise = this.call("GET", path, undefined, options).finally(() => {
+      if (this.reads.get(path) === promise) this.reads.delete(path);
+    });
+    this.reads.set(path, promise);
+    return promise;
+  },
+  cancelReads() {
+    for (const controller of this.controllers) { controller.expectedAbort = true; controller.abort(); }
+    this.reads.clear();
+  },
+  clear() { this.cancelReads(); this.cache.clear(); },
   post: (p, b) => api.call("POST", p, b),
   put:  (p, b) => api.call("PUT", p, b),
   del:  (p)    => api.call("DELETE", p),
@@ -33,6 +78,106 @@ function toast(msg, kind = "") {
 }
 
 const state = { status: null, settings: null };
+const dirtyFields = new WeakSet();
+document.addEventListener("input", event => dirtyFields.add(event.target));
+document.addEventListener("change", event => dirtyFields.add(event.target));
+
+function markSaved(path, body) {
+  if (path === "/api/settings" && body) {
+    for (const element of $$("[data-set], #ar-route, #ar-verify")) {
+      const key = element.dataset.set || (element.id === "ar-route" ? "transfer_mode" : "verify_mode");
+      if (key in body) dirtyFields.delete(element);
+    }
+  }
+  const match = /^\/api\/queue\/(\d+)\//.exec(path);
+  if (match) for (const element of $$("input,select,textarea", $("#job-" + match[1]) || document.createElement("div"))) dirtyFields.delete(element);
+}
+
+const polling = {
+  topics: new Map(), timer: null, paused: false,
+  add(name, delay, run) {
+    const previous = this.topics.get(name);
+    if (previous) { previous.delay = delay; previous.run = run; return; }
+    this.topics.set(name, { delay, run, next: Date.now(), busy: false });
+    this.schedule();
+  },
+  remove(name) { this.topics.delete(name); this.schedule(); },
+  pause() { this.paused = true; clearTimeout(this.timer); api.cancelReads(); },
+  resume() { this.paused = false; for (const topic of this.topics.values()) topic.next = Date.now(); this.schedule(); },
+  immediate() { const topic = this.topics.get("live"); if (topic) topic.next = Date.now(); this.schedule(); },
+  schedule() {
+    clearTimeout(this.timer);
+    if (this.paused || document.hidden) return;
+    const due = [...this.topics.values()].filter(topic => !topic.busy);
+    if (!due.length) return;
+    this.timer = setTimeout(() => this.tick(), Math.max(0, Math.min(...due.map(topic => topic.next)) - Date.now()));
+  },
+  tick() {
+    if (this.paused || document.hidden) return;
+    for (const [name, topic] of this.topics) {
+      if (topic.busy || topic.next > Date.now()) continue;
+      if (!["live", "age"].includes(name) && connection.status !== "connected") { topic.next = Date.now() + 5000; continue; }
+      topic.busy = true;
+      Promise.resolve().then(topic.run).catch(error => {
+        if (error.transient) connection.fail(error);
+      }).finally(() => {
+        topic.busy = false;
+        topic.next = Date.now() + (typeof topic.delay === "function" ? topic.delay() : topic.delay);
+        this.schedule();
+      });
+    }
+    this.schedule();
+  },
+};
+
+const connection = {
+  status: "connected", failures: 0, lastContact: 0, lastData: 0, lastFailure: 0, disabled: new Map(),
+  contact() { this.lastContact = Date.now(); },
+  fail(error) {
+    if (error.recorded) return;
+    error.recorded = true;
+    if (this.status === "connected" || Date.now() - this.lastFailure > 1000) this.failures++;
+    this.lastFailure = Date.now();
+    this.status = this.failures >= 3 ? "disconnected" : "reconnecting";
+    this.draw(); this.lock(); polling.immediate();
+  },
+  connected(sampledAt = null) {
+    this.status = "connected"; this.failures = 0;
+    if (sampledAt) this.lastData = sampledAt * 1000;
+    else if (!this.lastData) this.lastData = Date.now();
+    for (const [element, disabled] of this.disabled) {
+      element.disabled = disabled && element.disabled; delete element.dataset.connectionDisabled;
+    }
+    this.disabled.clear(); this.draw();
+  },
+  delay() { return Math.min(30000, 5000 * 2 ** Math.max(0, this.failures - 1)) + Math.random() * 250; },
+  lock() {
+    for (const element of $$("#content button, #wizard button, #ar-route, #ar-verify, #autorip, [data-optical-drive], #sys-reboot, #sys-poweroff, [data-set-now]")) {
+      if (["t-refresh", "w-skip"].includes(element.id) || element.hasAttribute("data-close")) continue;
+      if (!this.disabled.has(element)) this.disabled.set(element, !!element.disabled);
+      element.disabled = true; element.dataset.connectionDisabled = "true";
+    }
+  },
+  draw() {
+    const indicator = $("#server-connection");
+    if (!indicator) return;
+    indicator.dataset.state = this.status;
+    indicator.title = this.status[0].toUpperCase() + this.status.slice(1);
+    $("#connection-label").textContent = indicator.title;
+    $("#connection-banner").hidden = this.status === "connected";
+    document.body.classList.toggle("connection-lost", this.status !== "connected");
+    $("#connection-message").textContent = this.status === "disconnected"
+      ? "Server disconnected. Last data is shown; reconnection attempts continue."
+      : "Reconnecting to the server. Your current view and unsaved changes are retained.";
+    $("#connection-age").textContent = this.lastData
+      ? `Last update ${Math.max(0, Math.floor((Date.now() - this.lastData) / 1000))}s ago` : "Waiting for current data";
+  },
+};
+$("#connection-retry").onclick = () => { connection.status = "reconnecting"; connection.draw(); polling.immediate(); };
+document.addEventListener("click", event => {
+  if (event.target.closest("[data-connection-disabled]")) { event.preventDefault(); event.stopImmediatePropagation(); }
+}, true);
+window.addEventListener("online", () => polling.immediate());
 const containerMode = () => !!(state.deployment && state.deployment.container);
 
 document.addEventListener("click", async event => {
@@ -212,6 +357,7 @@ function ago(ts) {
 
 /* ════════════════════ sign in ════════════════════ */
 function showGate(sub) {
+  polling.pause();
   $("#shell").classList.add("hidden");
   $("#wizard").classList.add("hidden");
   $("#gate").classList.remove("hidden");
@@ -224,9 +370,9 @@ $("#login-form").onsubmit = async (e) => {
   e.preventDefault();
   $("#gate-err").textContent = "";
   try {
-    await api.post("/api/auth/login", {
-      username: $("#gate-user").value, password: $("#gate-pass").value,
-    });
+    const credentials = { username: $("#gate-user").value, password: $("#gate-pass").value };
+    polling.pause(); resetPrivateViews();
+    await api.post("/api/auth/login", credentials);
     await boot();
   } catch (err) { $("#gate-err").textContent = err.message; }
 };
@@ -836,26 +982,27 @@ async function showRenewalNotice() {
 function pollMakeMKV(into = "#mk-progress") {
   const box = $(into);
   if (!box) return;
-  const timer = setInterval(async () => {
-    let st;
-    try { st = await api.get("/api/makemkv/install"); } catch (e) { return; }
+  mkProgress.set(into, box);
+  watchMakeMKV();
+}
+
+function paintMakeMKVProgress(st) {
+  for (const [into, box] of mkProgress) {
+    if (!box.isConnected) { mkProgress.delete(into); continue; }
     if (st.phase === "done") {
-      clearInterval(timer);
-      box.innerHTML = `<div class="result ok"><b>Installed</b>${esc(st.message)}</div>`;
-      toast("MakeMKV installed", "ok");
-      return;
-    }
-    if (st.phase === "error") {
-      clearInterval(timer);
-      box.innerHTML = `<div class="result bad"><b>${esc(st.message)}</b>
-        ${st.detail ? `<div class="why">${esc(st.detail)}</div>` : ""}</div>`;
+      patchMarkup(box, `<div class="result ok"><b>Installed</b>${esc(st.message)}</div>`);
+      mkProgress.delete(into);
+    } else if (st.phase === "error") {
+      patchMarkup(box, `<div class="result bad"><b>${esc(st.message)}</b>
+        ${st.detail ? `<div class="why">${esc(st.detail)}</div>` : ""}</div>`);
       const btn = $("#mk-install") || $("#mk-upgrade");
       if (btn) btn.disabled = false;
-      return;
+      mkProgress.delete(into);
+    } else {
+      patchMarkup(box, `<div class="result busy"><span class="spin"></span>${esc(st.message || "Working...")}
+        <div class="bar" style="margin-top:10px"><i style="width:${((st.progress || 0) * 100).toFixed(0)}%"></i></div></div>`);
     }
-    box.innerHTML = `<div class="result busy"><span class="spin"></span>${esc(st.message || "Working…")}
-      <div class="bar" style="margin-top:10px"><i style="width:${(st.progress * 100).toFixed(0)}%"></i></div></div>`;
-  }, 700);
+  }
 }
 
 /* ════════════════════ views ════════════════════ */
@@ -870,15 +1017,19 @@ const views = {};
    the disc name the empty state had just said, which is the kind of duplication that
    reads as an interface describing its own data model. */
 views.queue = async () => {
-  // Fetch the drive state rather than reading the snapshot boot() took. The tray is
-  // the one thing on this page that changes without the user doing anything -- a disc
-  // goes in and nothing on screen knew, and the Refresh button re-rendered the same
-  // stale snapshot, so it looked broken rather than slow.
-  const [q, st, ar] = await Promise.all([
-    api.get("/api/queue"),
-    api.get("/api/status"),
-    api.get("/api/autorip"),
-  ]);
+  const epoch = routeEpoch, key = currentView();
+  const snapshot = await liveSnapshot("base,drives,queue");
+  if (epoch !== routeEpoch || key !== currentView()) throw Object.assign(new Error("View changed"), { cancelled: true });
+  const live = snapshot.topics.queue;
+  if (!live || !snapshot.topics.drives || !snapshot.topics.base) {
+    throw Object.assign(new Error("Waiting for live data"), { warming: true });
+  }
+  const q = live.queue;
+  const st = mergeLiveStatus(snapshot);
+  const ar = live.autorip;
+  state.queue = q;
+  state.liveSources = snapshot.sources;
+  state.liveFresh = ["queue", "drives", "base"].every(name => !snapshot.sources[name]?.stale);
   // A refused duplicate leaves nothing on this page to look at -- no job, no file --
   // so the page it belongs on is Discs, next to the disc in question and the button
   // that overrides the refusal. Checked here because this is the only view that keeps
@@ -964,7 +1115,7 @@ function sendingStrip(sending) {
       <span class="muted">the drive is free — put the next disc in</span></div>
     ${sending.map(j => {
       const done = j.state === "verifying" ? 100 : Number(pct(j.bytes_sent, j.bytes_total));
-      return `<div class="send-row">
+      return `<div class="send-row" data-ui-key="send-${j.id}">
         <span class="send-name" title="${esc(j.title || j.disc_label || "")}">${
           esc(j.title || j.disc_label || "Unknown disc")}</span>
         ${familyTag(j.disc_family)}
@@ -1076,7 +1227,7 @@ function jobRow(j) {
   }).join("");
 
   return `
-    <div class="job">
+    <div class="job" id="job-${j.id}">
       <div class="job-head">
         <div class="grow">
           <div class="job-title">${esc(j.title || j.disc_label || "Unknown disc")}${
@@ -1256,7 +1407,7 @@ function seasonPrompt(j) {
   const trust = { high: ["Read off the disc", "ok"], medium: ["Very likely right", ""],
                   low: ["A guess", "warn"] }[plan.confidence] || ["", ""];
   return `
-    <div class="job needs">
+    <div class="job needs" id="job-${j.id}">
       <div class="job-head">
         <div class="grow">
           <div class="job-title">${esc(plan.series || j.disc_label || "A season disc")}</div>
@@ -1388,7 +1539,7 @@ function identifyPrompt(j) {
   const music = j.kind === "music";
   const data = j.kind === "data";
   return `
-    <div class="job needs">
+    <div class="job needs" id="job-${j.id}">
       <div class="job-head">
         <div class="grow">
           <div class="job-title">${esc(j.disc_label || (music ? "A music CD" : "A disc"))}</div>
@@ -2145,17 +2296,17 @@ function wireMusicTools() {
       b.disabled = false;
       return;
     }
-    for (let i = 0; i < 200; i++) {
-      await new Promise(r => setTimeout(r, 3000));
-      const box = $("#music-tools");
-      if (!box) return;                          // navigated away
-      let t;
-      try { t = await api.get(`/api/music/tools?format=${encodeURIComponent(fmt)}`); }
-      catch (e) { continue; }
-      box.innerHTML = musicToolsLine(t);
-      if (t.ready) { toast("Music CDs are ready", "ok"); return; }
-      if (!t.installing && t.phase === "error") return;
-    }
+    const box = $("#music-tools");
+    polling.add("music-tools", 5000, async () => {
+      if (!box?.isConnected) { polling.remove("music-tools"); return; }
+      const tools = await api.get(`/api/music/tools?format=${encodeURIComponent(fmt)}`);
+      if (!box.isConnected) return;
+      patchMarkup(box, musicToolsLine(tools)); wireMusicTools();
+      if (!tools.installing) {
+        polling.remove("music-tools");
+        if (tools.ready) toast("Music CDs are ready", "ok");
+      }
+    });
   });
 }
 
@@ -3193,8 +3344,8 @@ views.system = async (sub = "status") => {
 const systemPages = {};
 
 /* ── Status ── */
-systemPages.status = async () => {
-  const st = await api.get("/api/status");
+systemPages.status = async (snapshot = null) => {
+  const st = snapshot || await api.get("/api/status");
   state.status = st;
   const sys = st.system, m = st.makemkv, s = st.storage;
 
@@ -3744,63 +3895,245 @@ function paintMakeMKVStrip() {
     <span class="mk-bar"><i style="width:${pct}%"></i></span></a>`;
 }
 
-let mkTimer = null;
+const mkProgress = new Map();
 function watchMakeMKV() {
-  if (mkTimer) return;
-  const tick = async () => {
-    let st;
-    try { st = await api.get("/api/makemkv/install"); } catch (e) { return; }
+  polling.add("makemkv", 5000, async () => {
+    const snapshot = await liveSnapshot("installers");
+    const st = snapshot.topics.installers?.makemkv;
+    if (!st) return;
     const phase = st.phase || "idle";
-    // Nothing has ever been started: stop asking rather than polling for ever.
-    if (phase === "idle" && !mkState.phase) { clearInterval(mkTimer); mkTimer = null; return; }
     mkState.phase = phase;
     mkState.message = st.message || "";
     mkState.progress = st.progress || 0;
     paintMakeMKVStrip();
-    if (phase === "done" || phase === "error") {
-      clearInterval(mkTimer); mkTimer = null;
+    paintMakeMKVProgress(st);
+    if (["done", "error", "idle"].includes(phase)) {
+      polling.remove("makemkv");
       // A finished build is worth seeing once and is then just clutter beside the
       // hostname. A failed one stays, because it needs somebody to do something.
       if (phase === "done") {
+        toast("MakeMKV installed", "ok"); polling.immediate();
         setTimeout(() => { mkState.phase = null; paintMakeMKVStrip(); }, 25000);
       }
     }
-  };
-  tick();
-  mkTimer = setInterval(tick, 3000);
+  });
 }
 
 /* ════════════════════ router ════════════════════ */
+let renderedView = null;
+let routeEpoch = 0;
+const cachedViews = new Map();
+const loadedViews = new Set();
+
+function currentView() { return location.hash.replace(/^#\//, "") || "queue"; }
+
+function resetPrivateViews() {
+  routeEpoch++; cachedViews.clear(); loadedViews.clear(); renderedView = null;
+  state.queue = null; state.status = null; state.settings = null; state.user = null;
+  state.liveSources = null; state.serverEpoch = null; artState = { label: null, image: null };
+  mkProgress.clear(); mkState.phase = null; polling.topics.clear();
+  wizard.data.password = ""; $("#wizard").replaceChildren(); $("#gate-pass").value = "";
+  connection.disabled.clear(); api.clear(); $("#content").replaceChildren();
+  $("#sidebar").replaceChildren(); $("#health-pills").replaceChildren();
+}
+
+function editing(node) {
+  return node.nodeType === 1 &&
+    ((document.activeElement?.matches("input,select,textarea") && node.contains(document.activeElement)) ||
+     [node, ...$$("input,select,textarea", node)].some(element => dirtyFields.has(element)));
+}
+
+function nodeKey(node) { return node.nodeType === 1 ? node.id || node.dataset.uiKey || null : null; }
+
+function syncNode(target, source) {
+  if (target.nodeType !== source.nodeType || target.nodeName !== source.nodeName) {
+    if (!editing(target)) target.replaceWith(source.cloneNode(true));
+    return;
+  }
+  if (target.nodeType === 3) { if (target.nodeValue !== source.nodeValue) target.nodeValue = source.nodeValue; return; }
+  if (target.nodeType !== 1) return;
+  if (target.matches(".job.needs") && editing(target)) {
+    if (target.innerHTML !== source.innerHTML) target.dataset.uiPending = "true";
+    return;
+  }
+  const interactive = target.matches("input,select,textarea");
+  const preserve = interactive && editing(target);
+  if (connection.disabled.has(target)) connection.disabled.set(target, !!source.disabled);
+  for (const attribute of [...target.attributes]) {
+    if (["open", "value", "checked", "data-connection-disabled"].includes(attribute.name)) continue;
+    if (attribute.name === "data-ui-pending") continue;
+    if (!source.hasAttribute(attribute.name)) target.removeAttribute(attribute.name);
+  }
+  for (const attribute of source.attributes) {
+    if (["open", "value", "checked"].includes(attribute.name)) continue;
+    if (target.getAttribute(attribute.name) !== attribute.value) target.setAttribute(attribute.name, attribute.value);
+  }
+  delete target.dataset.uiPending;
+  if (interactive) {
+    if (preserve) return;
+    if (target.tagName === "SELECT" && target.innerHTML !== source.innerHTML) target.innerHTML = source.innerHTML;
+    target.value = source.value;
+    if (target.tagName === "INPUT") target.checked = source.checked;
+    return;
+  }
+  syncChildren(target, source);
+}
+
+function syncChildren(target, source) {
+  const old = [...target.childNodes];
+  const keyed = new Map(old.filter(node => nodeKey(node)).map(node => [nodeKey(node), node]));
+  const unkeyed = old.filter(node => !nodeKey(node));
+  const used = new Set();
+  let cursor = target.firstChild;
+  for (const fresh of [...source.childNodes]) {
+    const candidate = nodeKey(fresh) ? keyed.get(nodeKey(fresh)) : unkeyed.shift();
+    if (candidate && !used.has(candidate)) {
+      used.add(candidate);
+      if (candidate !== cursor) target.insertBefore(candidate, cursor);
+      const next = candidate.nextSibling;
+      syncNode(candidate, fresh);
+      cursor = next;
+    } else {
+      const added = fresh.cloneNode(true); target.insertBefore(added, cursor);
+    }
+  }
+  for (const node of old) if (!used.has(node) && node.parentNode === target) {
+    if (editing(node)) node.dataset.uiPending = "true";
+    else node.remove();
+  }
+}
+
+function patchMarkup(target, markup) {
+  if (target.uiMarkup === markup && !$("[data-ui-pending]", target)) return;
+  const template = document.createElement("template"); template.innerHTML = markup;
+  syncChildren(target, template.content);
+  target.uiMarkup = markup;
+  paintIcons(target);
+  if (connection.status !== "connected") connection.lock();
+}
+
+function switchView(key, markup = null) {
+  const content = $("#content");
+  if (renderedView !== key) {
+    if (renderedView) {
+      const saved = document.createDocumentFragment(); saved.append(...content.childNodes);
+      cachedViews.set(renderedView, saved);
+    }
+    content.replaceChildren();
+    if (cachedViews.has(key)) { content.append(cachedViews.get(key)); cachedViews.delete(key); }
+    content.uiMarkup = null;
+    renderedView = key;
+  }
+  if (markup !== null) patchMarkup(content, markup);
+}
+
+async function liveSnapshot(scopes) {
+  const snapshot = await api.get("/api/ui/live?scopes=" + scopes, { etag: true });
+  if (!snapshot || !snapshot.topics) throw Object.assign(new Error("Live data is not available yet"), { warming: true });
+  if (state.serverEpoch && state.serverEpoch !== snapshot.epoch) api.cache.clear();
+  state.serverEpoch = snapshot.epoch;
+  return snapshot;
+}
+
+function mergeLiveStatus(snapshot) {
+  const live = snapshot.topics.queue;
+  const st = { ...(state.status || {}), ...(snapshot.topics.base || {}), ...(snapshot.topics.telemetry || {}) };
+  if (live) { st.drives = live.drives; st.autorip = live.autorip; st.duplicate = live.duplicate; }
+  else if (snapshot.topics.drives) st.drives = snapshot.topics.drives.map(drive => ({
+    ...(state.status?.drives || []).find(previous => previous.id === drive.id), ...drive }));
+  st.optical = { ...(st.optical || {}), drives: st.drives || [] };
+  return st;
+}
+
 async function route() {
+  const epoch = ++routeEpoch;
   const hash = location.hash.replace(/^#\//, "") || "queue";
   const [section, sub] = hash.split("/");
   const view = views[section] || views.queue;
 
-  renderSidebar(section, sub);
-
   const content = $("#content");
+  if (renderedView !== hash) api.cancelReads();
   try {
-    content.innerHTML = await view(sub);
+    const markup = await view(sub);
+    if (epoch !== routeEpoch || hash !== currentView()) return;
+    switchView(hash, markup);
+    renderSidebar(section, sub);
+    wireContent(section, sub);
+    loadedViews.add(hash);
+    if (section !== "queue" || state.liveFresh !== false) {
+      connection.connected(state.liveSources?.queue?.sampled_at);
+    } else {
+      connection.status = "reconnecting"; connection.draw(); connection.lock();
+    }
   } catch (e) {
-    content.innerHTML = `<div class="card"><div class="empty-state">
-      <div class="big">${icon("triangle-exclamation")}</div><h2>Couldn't load that</h2><p>${esc(e.message)}</p></div></div>`;
-    return;
+    if (e.cancelled || epoch !== routeEpoch || hash !== currentView() || e.status === 401) return;
+    if (e.transient || e.warming) {
+      if (e.transient) connection.fail(e);
+      if (!content.childElementCount || renderedView !== hash) {
+        const cached = cachedViews.has(hash);
+        switchView(hash, cached ? null : `<div class="empty-state"><h2>Waiting for this view</h2><p>The server data will appear when available.</p></div>`);
+        renderSidebar(section, sub);
+      }
+    } else {
+      if (content.childElementCount && renderedView === hash) toast(e.message, "bad");
+      else switchView(hash, `<div class="empty-state"><h2>Couldn't load that</h2><p>${esc(e.message)}</p></div>`);
+    }
+  } finally {
+    if (epoch === routeEpoch) scheduleLiveRefresh(section);
   }
-  paintIcons(content);
-  wireContent(section, sub);
   $("#sidebar").classList.remove("open");
-  scheduleLiveRefresh(section);
 }
 
-/* ── live refresh ──
-   A progress bar that only moves when you press Refresh is not a progress bar. The
-   queue re-renders itself while something is actually moving, and stops the moment
-   nothing is -- an appliance with 512 MB should not be polling itself for no reason.
-
-   `needs_input` deliberately does NOT keep the timer alive: that state has a form in
-   it, and re-rendering underneath somebody halfway through typing a film title is a
-   worse bug than a stale page. */
-let liveTimer = null;
+async function refreshCurrentView() {
+  const key = currentView();
+  const epoch = routeEpoch;
+  const recovering = connection.status !== "connected" || state.resync;
+  let sampledAt = null;
+  if (connection.status !== "connected") {
+    const ready = await api.get("/api/ui/ready", { timeout: 5000 });
+    if (!ready.ok) throw Object.assign(new Error("Server is not ready"), { transient: true });
+    if (state.serverEpoch && state.serverEpoch !== ready.epoch) api.cache.clear();
+  }
+  if (!$("#shell").classList.contains("hidden")) {
+    if (renderedView !== key || !loadedViews.has(key)) { await route(); return; }
+    if (key === "queue") {
+      const markup = await views.queue();
+      if (key !== currentView() || epoch !== routeEpoch || polling.paused || document.hidden) return;
+      patchMarkup($("#content"), markup); wireContent("queue"); renderChrome();
+      sampledAt = state.liveSources?.queue?.sampled_at;
+      if (state.liveFresh === false) return;
+    } else if (key === "system/status" && (recovering || !state.metricsAt || Date.now() - state.metricsAt >= 30000)) {
+      const snapshot = await liveSnapshot("base,drives,telemetry");
+      const st = mergeLiveStatus(snapshot);
+      if (!st.system || !snapshot.topics.base) return;
+      const markup = await systemPages.status(st);
+      if (key !== currentView() || epoch !== routeEpoch || polling.paused || document.hidden) return;
+      state.status = st; patchMarkup($("#content"), head("System — Status", "") + markup);
+      wireContent("system", "status"); renderChrome();
+      state.metricsAt = Date.now();
+      sampledAt = snapshot.sources.telemetry?.sampled_at;
+      if (snapshot.sources.base?.stale || snapshot.sources.telemetry?.stale) return;
+    } else if (recovering) {
+      const [section, sub] = key.split("/");
+      const markup = await (views[section] || views.queue)(sub);
+      if (key !== currentView() || epoch !== routeEpoch || polling.paused || document.hidden) return;
+      patchMarkup($("#content"), markup); wireContent(section, sub);
+      sampledAt = Date.now() / 1000;
+    } else if (Date.now() - connection.lastContact >= 9000) {
+      await api.get("/api/ui/ready", { timeout: 5000 });
+    }
+  } else {
+    if (recovering) {
+      await api.get("/api/setup/state");
+      if (state.user) await api.get("/api/auth/me");
+    } else if (Date.now() - connection.lastContact >= 9000) {
+      await api.get("/api/ui/ready", { timeout: 5000 });
+    }
+  }
+  if (epoch === routeEpoch && !polling.paused && !document.hidden) {
+    state.resync = false; connection.connected(sampledAt);
+  }
+}
 
 /* ── disc artwork ──
    Plex's trick: the film's poster behind the disc panel, so the box visibly knows what
@@ -3812,10 +4145,8 @@ let liveTimer = null;
    the panel it is composed against something, which is what makes it read as design
    rather than as a picture that happens to be behind the text.
 
-   State, not DOM: the lookup result is cached here and `tray()` paints it on every
-   render. The queue re-renders every 2.5s during a rip, so anything that faded itself
-   in on each render would strobe. Painting the same background-image is a no-op for
-   the browser, so it simply sits there. */
+  The lookup result is cached here and `tray()` paints it on each render. Painting
+  the same background-image is a no-op for the browser, so it simply sits there. */
 let artState = { label: null, image: null };
 
 async function setDiscArt(label) {
@@ -3823,7 +4154,7 @@ async function setDiscArt(label) {
   if (label === artState.label) return;      // same disc, already decided
   artState = { label: label, image: null };
   let hit;
-  try { hit = await api.get(`/api/artwork?label=${encodeURIComponent(label)}`); }
+  try { hit = await api.get(`/api/artwork?label=${encodeURIComponent(label)}`, { optional: true }); }
   catch (e) { return; }                       // offline: no backdrop, no complaint
   if (artState.label !== label) return;       // disc changed while we were asking
   if (!hit || !hit.ok) return;                // not sure enough: show nothing
@@ -3837,38 +4168,28 @@ async function setDiscArt(label) {
   if (artState.label !== label) return;
   artState.image = hit.image;
   artState.title = hit.title;
-  if (location.hash.replace(/^#\//, "").split("/")[0] === "queue") route();
+  if (currentView() === "queue") {
+    const cell = $(".disc-cell");
+    if (cell) {
+      cell.classList.add("has-art");
+      let art = $(".tray-art", cell);
+      if (!art) { art = document.createElement("div"); art.className = "tray-art"; cell.prepend(art); }
+      art.style.backgroundImage = `url('${hit.image}')`;
+    }
+  }
 }
 
 function scheduleLiveRefresh(section) {
-  clearTimeout(liveTimer);
-  if (section !== "queue") return;
-  // Still true: a job waiting for input has a form in it, and re-rendering underneath
-  // somebody mid-sentence is worse than a stale page.
-  if ($$(".job.needs").length) return;
-  // An *idle* queue has to keep looking too. Putting a disc in is the one thing on this
-  // page that happens with no user action, and this used to return early whenever the
-  // queue was empty -- so the tray stayed empty until the user clicked something, and
-  // Refresh re-rendered the same stale snapshot. Slower when idle: nothing is racing.
-  // 1.2s while a job is live. The phase line, the legs and the ETA all move on their
-  // own during a rip, and at 2.5s the numbers visibly stepped rather than counted.
-  const delay = $$(".job").length ? 1200 : 5000;
-  liveTimer = setTimeout(() => {
-    // A hidden tab must keep the loop alive, not end it. This used to just skip the
-    // refresh and never reschedule, so switching away during a rip killed polling for
-    // good: you came back to a page frozen on "Saving to MKV file" while the box had
-    // long since finished uploading. Nothing was wrong with the box, and nothing was
-    // wrong with the job -- the page had simply stopped asking.
-    if (document.hidden) { scheduleLiveRefresh(section); return; }
-    route();
-  }, delay);
+  polling.add("live", () => connection.status !== "connected" ? connection.delay()
+    : currentView() === "queue" && ($$(".job, .send-row").length || !state.queue) ? 5000 : 10000,
+    refreshCurrentView);
+  polling.add("age", 1000, () => { if (connection.status !== "connected") connection.draw(); });
 }
 
 /* Coming back to the tab should show now, not in a second and a bit. */
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && (location.hash.replace(/^#\//, "").split("/")[0] || "queue") === "queue") {
-    route();
-  }
+  if (document.hidden) polling.pause();
+  else if ($("#gate").classList.contains("hidden")) { state.resync = true; polling.resume(); }
 });
 
 function collectSettings() {
@@ -3986,16 +4307,19 @@ function wireContent(section, sub) {
       b.disabled = false;
       return;
     }
-    for (let i = 0; i < 200; i++) {
-      await new Promise(r => setTimeout(r, 3000));
-      const box = $("#backup-tools");
-      if (!box) return;                          // navigated away
-      let t;
-      try { t = await api.get("/api/backup/tools"); } catch (e) { continue; }
-      box.innerHTML = backupToolsLine(t);
-      if (t.ready) { toast("DVD backups are ready", "ok"); return; }
-      if (!t.installing && t.phase === "error") return;
-    }
+    const box = $("#backup-tools");
+    polling.add("dvd-tools", 5000, async () => {
+      if (!box?.isConnected) { polling.remove("dvd-tools"); return; }
+      const tools = await liveSnapshot("installers");
+      const report = tools.topics.installers?.dvd;
+      if (!report || !box.isConnected) return;
+      patchMarkup(box, backupToolsLine(report));
+      if (!report.installing) {
+        polling.remove("dvd-tools");
+        if (report.ready) toast("DVD backups are ready", "ok");
+        wireContent(section, sub);
+      }
+    });
   });
 
   // Changing the format redraws its quality choices and asks whether this format's
@@ -4166,7 +4490,14 @@ function wireContent(section, sub) {
   };
 
   const refresh = $("#t-refresh");
-  if (refresh) refresh.onclick = () => route();
+  if (refresh) refresh.onclick = () => {
+    if ($("[data-ui-pending]")) {
+      if (!confirm("Apply the updated job state and discard this job's unsaved edits?")) return;
+      for (const element of $$("[data-ui-pending] input, [data-ui-pending] select, [data-ui-pending] textarea")) dirtyFields.delete(element);
+      document.activeElement?.blur();
+    }
+    api.cache.clear(); route();
+  };
   const eject = $("#t-eject");
   if (eject) eject.onclick = async () => {
     const r = await api.post("/api/drive/eject");
@@ -4908,6 +5239,7 @@ document.addEventListener("click", () => $("#user-menu")?.classList.add("hidden"
 $("#logout").onclick = async (e) => {
   e.preventDefault();
   await api.post("/api/auth/logout");
+  polling.pause(); resetPrivateViews();
   location.reload();
 };
 
@@ -5034,11 +5366,14 @@ async function boot() {
   $("#sys-reboot").hidden = containerMode();
   $("#sys-poweroff").hidden = containerMode();
 
+  state.resync = false;
+  connection.connected(); polling.resume(); scheduleLiveRefresh();
   if (!setup.has_users) { wizard.step = 0; wizard.render(); return; }
 
   let me;
   try { me = await api.get("/api/auth/me"); } catch (e) { showGate(); return; }
   if (!me.username) { showGate(); return; }
+  state.user = me.username;
   $("#menu-who").textContent = me.username;
 
   if (!setup.complete) {

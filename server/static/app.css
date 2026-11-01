@@ -157,6 +157,26 @@ h3 { font-size: 13px; font-weight: 500; color: var(--fg-strong);
 .search:focus-within { border-bottom-color: var(--accent); }
 
 .pills { display: flex; gap: 6px; margin-right: 6px; }
+.server-connection { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; width: 112px; font-size: 12px; }
+.connection-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.server-connection[data-state="reconnecting"] .connection-dot { background: var(--warn); animation: connection-pulse 1.5s ease-in-out infinite; }
+.server-connection[data-state="disconnected"] .connection-dot { background: var(--bad); }
+.connection-banner { position: fixed; top: var(--topbar-h); left: var(--side-w); right: 0; z-index: 25;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; min-height: 48px;
+  padding: 8px 26px; background: var(--surface, #252525); border-bottom: 1px solid var(--warn); font-size: 12px; }
+#connection-message { flex: 1 1 280px; }
+#connection-age { color: var(--fg-muted); }
+.connection-lost .content { padding-top: 86px; }
+@keyframes connection-pulse { 50% { opacity: .35; } }
+[data-connection-disabled] { opacity: .5; pointer-events: none; }
+.job[data-ui-pending]::before { content: "Updated job state available"; display: block;
+  color: var(--warn); font-size: 12px; margin-bottom: 8px; }
+@media (max-width: 800px) {
+  .server-connection { width: 16px; }
+  #connection-label { display: none; }
+  .connection-banner { left: 0; padding: 8px 14px; }
+  .connection-lost .content { padding-top: 120px; }
+}
 .pill {
   font-size: 11px; padding: 3px 9px; border-radius: 11px;
   background: rgba(255,255,255,.08); color: var(--fg);

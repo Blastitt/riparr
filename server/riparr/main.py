@@ -20,7 +20,7 @@ from . import (__version__, artwork as ART, backup as BK, db, drives as DRV, led
                music as MU,
                makemkv as MK,
                notify as NT, platform as P, rip as RIP, shares as SH, system as SY,
-               tv as TV, updater)
+               tv as TV, updater, ui_state as UI)
 
 STATIC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
 COOKIE = "riparr_session"
@@ -44,7 +44,10 @@ async def container_boundaries(request: Request, call_next):
             (request.url.path.startswith("/api/shares") and request.method != "GET")):
         return JSONResponse(status_code=409, content={"detail":
             "This deployment uses image-supplied tools, host networking and an externally mounted library."})
-    return await call_next(request)
+    response = await call_next(request)
+    if request.method not in ("GET", "HEAD") and response.status_code < 400:
+        UI.cache.invalidate("queue", "base", "installers", "estimates")
+    return response
 
 
 def _secret():
@@ -106,6 +109,7 @@ def _startup():
     SY.init()
     _check_password_reset()
     SY.start_scheduler()
+    _configure_ui_cache()
     RIP.start()
     BK.start()
     MU.start()
@@ -114,6 +118,7 @@ def _startup():
 
 @app.on_event("shutdown")
 def _shutdown():
+    UI.cache.close()
     RIP.stop()
 
 
@@ -416,6 +421,8 @@ def _share_out(share):
 
 @app.post("/api/drive/eject")
 def drive_eject(user=Depends(require_user)):
+    if db.drive_busy():
+        raise HTTPException(status_code=409, detail="Riparr is reading a disc. Eject after it finishes.")
     return P.eject()
 
 
@@ -434,6 +441,8 @@ def drive_select(body: DriveSelection, user=Depends(require_user)):
 
 @app.post("/api/drive/close")
 def drive_close(user=Depends(require_user)):
+    if db.drive_busy():
+        raise HTTPException(status_code=409, detail="Riparr is reading a disc. Close the tray after it finishes.")
     ok, message = P.close_tray()
     if not ok:
         raise HTTPException(status_code=400, detail=message)
@@ -575,7 +584,7 @@ def _reads_phrase(drive):
     return ", ".join(parts)
 
 
-def _drive_report():
+def _drive_report(drives=None, probe=True):
     """The drives, plus the two things that are too expensive for the disc watcher.
 
     `optical_drives()` runs every three seconds and stays cheap. LibreDrive costs a
@@ -584,7 +593,7 @@ def _drive_report():
     """
     out = []
     busy = db.active_job() is not None
-    for d in P.optical_drives():
+    for d in (P.optical_drives() if drives is None else drives):
         d = dict(d)
         # Ask MakeMKV about LibreDrive only when it cannot get in the way. The probe is
         # a two-minute `makemkvcon` run that holds the drive, and rip.py:136 already
@@ -595,7 +604,7 @@ def _drive_report():
         # button that did nothing. Idle tray, or a disc that actually raises the UHD
         # question: otherwise leave it None and let the chip stay unlit.
         ask = not busy and (not d.get("present") or RIP.disc_family(d) == "uhd")
-        d["libredrive"] = P.libredrive_status(d) if ask else None
+        d["libredrive"] = P.libredrive_status(d, probe=probe) if ask else None
         # MakeMKV outranks the registry in both directions. The registry is what to
         # expect of a drive you have not bought; MakeMKV is what this drive does.
         verdict = {"enabled": "yes", "no": "no"}.get(d["libredrive"]) or d.get("uhd")
@@ -616,8 +625,8 @@ def _drive_report():
                               if n else word)
         d["cannot_read"] = (RIP.unreadable_reason(d, d["libredrive"])
                             if d.get("present") else None)
-        d["space_warning"] = _space_warning(d) if d.get("present") else None
-        d["space_note"] = _space_note(d) if d.get("present") else None
+        d["space_warning"] = _space_warning(d) if probe and d.get("present") else None
+        d["space_note"] = _space_note(d) if probe and d.get("present") else None
         out.append(d)
     return out
 
@@ -704,7 +713,7 @@ def _library_room(drive):
     return min(room) if room else None
 
 
-def _autorip_state():
+def _autorip_state(snapshot=None):
     """Auto Rip's prerequisites, every one of them, whether or not it is met.
 
     This used to return only the things that were wrong. That is the right shape for
@@ -720,10 +729,12 @@ def _autorip_state():
             the card is full, or the key dies this week
       fail  Auto Rip cannot work at all and the switch stays unavailable
     """
-    mk = P.makemkv_status()
+    mk = P.makemkv_status() if snapshot is None else snapshot.get("makemkv", {})
     share = db.default_share()
-    drives = P.optical_drives()
-    cap = _capacity(P.storage_status()["free_bytes"])
+    drives = P.optical_drives() if snapshot is None else snapshot.get("drives", [])
+    cap = (_capacity(P.storage_status()["free_bytes"]) if snapshot is None else
+           _capacity(snapshot.get("storage", {}).get("free_bytes", 0), direct=
+                     db.get("transfer_mode") == "direct" and snapshot.get("library", {}).get("mounted", False)))
     warn_days = int(db.get("warn_key_days") or 7)
     checks = []
 
@@ -743,7 +754,10 @@ def _autorip_state():
     #    lapsed last week is a working install and a dead appliance, and those two
     #    facts want separate lines.
     days = mk.get("days_left")
-    if days is not None and not P.trust_dates():
+    dates_ok = (P.trust_dates() if snapshot is None else
+                snapshot.get("clock", {}).get("plausible", False) and
+                snapshot.get("clock", {}).get("synced") is not False)
+    if days is not None and not dates_ok:
         days = None                       # a day count computed against a wrong clock
     if not mk.get("installed"):
         check("The MakeMKV key is current", "fail", "Nothing installed to key yet",
@@ -751,7 +765,8 @@ def _autorip_state():
     elif not db.get("makemkv_key"):
         check("The MakeMKV key is current", "fail", "No key entered",
               "Encrypted discs won't decode without one.", "#/settings/general")
-    elif mk.get("installed") and not P.MOCK and not MK.key_is_registered():
+    elif mk.get("installed") and not P.MOCK and not (
+            MK.key_is_registered() if snapshot is None else snapshot.get("key_registered", False)):
         # The key is in Riparr but not in MakeMKV. This was the silent case: the row
         # above went green on a stored key while makemkvcon had never been given one.
         check("The MakeMKV key is current", "fail", "Entered but not registered",
@@ -1327,6 +1342,10 @@ def _job_out(j):
 
 @app.get("/api/queue")
 def queue(user=Depends(require_user)):
+    return _queue_snapshot()
+
+
+def _queue_snapshot(drives=None, estimates=None):
     jobs = [_job_out(j) for j in db.list_jobs(states=db.ACTIVE_STATES)]
     # What a rip usually costs on this machine, from this machine's own history. The
     # slow half of a rip cannot report progress at all -- see db.typical_job_seconds --
@@ -1342,9 +1361,14 @@ def queue(user=Depends(require_user)):
     # the user is watching the disc that is in the drive now, not the one on its way.
     sending = [j for j in jobs if j.get("state") in db.SENDING_STATES]
     active = next((j for j in jobs if j.get("disc_family")), None)
-    kind = active.get("disc_family") if active else _tray_family()
-    typical, samples = db.typical_job_seconds(kind=kind)
-    stages = db.typical_stage_seconds(kind=kind)
+    kind = active.get("disc_family") if active else _tray_family(drives)
+    if estimates is None:
+        typical, samples = db.typical_job_seconds(kind=kind)
+        stages = db.typical_stage_seconds(kind=kind)
+    else:
+        history = estimates.get(kind or "default", {})
+        typical, samples = history.get("seconds"), history.get("samples", 0)
+        stages = history.get("stages", {})
     # Per-stage medians as well as the total. The total answers "when will this be
     # done"; the stages answer "should the fact that nothing has moved for six minutes
     # worry me", which is the question that actually gets asked.
@@ -1357,13 +1381,89 @@ def queue(user=Depends(require_user)):
             "stage_order": db.STAGE_ORDER}
 
 
-def _tray_family():
+def _tray_family(drives=None):
     """What kind of disc is loaded, so an idle queue still estimates the right thing."""
     try:
-        d = next((x for x in P.optical_drives() if x.get("present")), None)
+        d = next((x for x in (P.optical_drives() if drives is None else drives) if x.get("present")), None)
         return RIP.disc_family(d) if d else None
     except Exception:
         return None
+
+
+def _ui_base():
+    storage = P.storage_status()
+    return {"version": __version__, "deployment": P.deployment(), "hostname": P.hostname(),
+            "storage": dict(storage, **_capacity(storage["free_bytes"])),
+            "makemkv": P.makemkv_status(), "key_registered": MK.key_is_registered(),
+            "share": _share_out(db.default_share()), "library": P.library_status(),
+            "led": {"detected": LED.available(), "state": LED.current_state()},
+            "duplicate": RIP.pending_duplicate()}
+
+
+def _ui_telemetry():
+    return {"system": P.system_status(), "clock": P.clock_status(), "wifi": P.wifi_status()}
+
+
+def _ui_queue():
+    drives = UI.cache.peek("drives") or []
+    snapshot = dict(UI.cache.peek("base") or {}, **(UI.cache.peek("telemetry") or {}))
+    snapshot["drives"] = drives
+    return {"queue": _queue_snapshot(drives, UI.cache.peek("estimates") or {}),
+            "autorip": _autorip_state(snapshot), "drives": _drive_report(drives, probe=False),
+            "duplicate": RIP.pending_duplicate(), "auto_rip": bool(db.get("auto_rip"))}
+
+
+def _ui_estimates():
+    result = {}
+    for kind in ("dvd", "bluray", "uhd", "cd", "default"):
+        family = None if kind == "default" else kind
+        seconds, samples = db.typical_job_seconds(kind=family)
+        result[kind] = {"seconds": seconds, "samples": samples,
+                        "stages": db.typical_stage_seconds(kind=family)}
+    return result
+
+
+def _ui_installers():
+    previous = UI.cache.peek("installers") or {}
+    current = {"makemkv": MK.install_status(), "dvd": BK.status(), "music": MU.status()}
+    if any(previous.get(name) != value and
+           (value.get("phase") in ("done", "error") or value.get("ready"))
+           for name, value in current.items()):
+        UI.cache.invalidate("base", "queue")
+    return current
+
+
+def _configure_ui_cache():
+    UI.cache = UI.SnapshotCache()
+    UI.cache.register("drives", 10)
+    UI.cache.register("base", 30, _ui_base)
+    UI.cache.register("telemetry", 60, _ui_telemetry)
+    UI.cache.register("estimates", 60, _ui_estimates)
+    UI.cache.register("queue", 5, _ui_queue)
+    UI.cache.register("installers", 5, _ui_installers)
+    UI.cache.request(["telemetry"])
+
+
+@app.get("/api/ui/ready")
+async def ui_ready():
+    return {"ok": True, "epoch": UI.cache.epoch}
+
+
+@app.get("/api/ui/live")
+def ui_live(request: Request, user=Depends(require_user)):
+    names = sorted(set(request.query_params.get("scopes", "queue,base,drives").split(",")))
+    if not names or any(name not in UI.cache.entries for name in names):
+        raise HTTPException(status_code=400, detail="Unknown UI snapshot scope")
+    requested = list(names)
+    if "queue" in names:
+        requested += ["base", "estimates"]
+    UI.cache.request(requested)
+    tag, body, sources = UI.cache.packet(names)
+    headers = {"ETag": tag, "Cache-Control": "no-cache", "X-Riparr-Epoch": UI.cache.epoch,
+               "X-Riparr-Sources": json.dumps(sources, separators=(",", ":"))}
+    if request.headers.get("if-none-match") == tag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=body, media_type="application/json", headers=headers)
 
 
 class RipRequest(BaseModel):

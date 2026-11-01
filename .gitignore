@@ -54,3 +54,5 @@ tools/preparer/riparr.ico
 tools/preparer/debugfs/
 
 .vscode/
+
+*.tar

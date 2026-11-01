@@ -55,6 +55,26 @@ exist.
 Self-documenting at `/api/docs`. The UI is only the first client of it — that is what
 makes Homepage widgets and multi-unit setups nearly free later.
 
+## Live Refresh
+
+The web UI polls scoped, shared snapshots at `/api/ui/live`, every 5 seconds for
+active jobs and every 10 seconds when idle. Historical estimates and host telemetry
+are sampled separately; live queue reads do not run optical or host probes inline.
+Snapshots carry stable ETags and per-source sampling/error/staleness metadata.
+The existing `/api/status`, `/api/queue` and `/api/autorip` APIs remain available.
+
+Refreshes preserve controls, focus, open details and unsaved drafts. Job changes
+that conflict with editing are deferred until submission or an explicit Refresh.
+Hidden tabs pause reads and resynchronize on return. Connection loss retains the
+current view, shows its age and disables backend commands. A lightweight readiness
+probe retries with capped backoff, followed by a current-view resync. Mutations are
+never automatically replayed; sign-out and authentication expiry clear UI caches.
+
+Checks: `python server/ui-state.test.py` (Linux for endpoint checks) and
+`python server/ui-refresh.test.py` (Playwright with the Edge browser installed).
+The latter accepts `--url` for a **fresh disposable** runtime with a marked library,
+and `--restart-container riparr-refresh-browser-...` to exercise real restart recovery.
+
 ## Not built
 
 **The rip engine.** Queue, history and disc history read real tables that nothing

@@ -135,6 +135,8 @@ def _watch_discs():
     while not _stop.wait(3):
         try:
             drives = P.optical_drives()
+            from . import ui_state
+            ui_state.publish_drives(drives)
             # Auto Rip's own state is part of what "changed" means. Otherwise the
             # obvious sequence -- put the disc in, notice nothing happens, go and turn
             # Auto Rip on -- does nothing, because the disc has not changed since the

@@ -385,7 +385,7 @@ _libredrive_inflight = {}
 _libredrive_lock = threading.Lock()
 
 
-def libredrive_status(drive, block=False):
+def libredrive_status(drive, block=False, probe=True):
     """Whether MakeMKV can get underneath this drive's firmware -- the UHD question.
 
     `drives.py` explains why nothing else can answer it: there is no MMC profile for
@@ -406,12 +406,11 @@ def libredrive_status(drive, block=False):
             os.environ.get("RIPARR_MOCK_DRIVE", "bluray"))
     if not drive or not drive.get("reads_bluray"):
         return None                      # a DVD drive has no UHD question to ask
-    if not makemkv_status().get("installed"):
-        return None
-
     key = (drive.get("id") or drive.get("device"), drive.get("vendor"), drive.get("model"))
     if key in _libredrive_cache:
         return _libredrive_cache[key]
+    if not probe or not makemkv_status().get("installed"):
+        return None
 
     with _libredrive_lock:
         ev = _libredrive_inflight.get(key)

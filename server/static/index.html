@@ -51,6 +51,9 @@
     <label class="search"><span class="mag" data-ic="magnifying-glass"></span>
       <input id="search" placeholder="Search" autocomplete="off"></label>
     <div class="grow"></div>
+    <span class="server-connection" id="server-connection" data-state="connected" title="Connected">
+      <i class="connection-dot"></i><span id="connection-label">Connected</span>
+    </span>
     <div class="pills" id="health-pills"></div>
     <!-- Riparr is free and forkable; this is the only ask on the page, and it sits
          next to the account menu rather than inside the interface proper. -->
@@ -76,6 +79,10 @@
 
   <nav class="sidebar" id="sidebar"></nav>
 
+  <div class="connection-banner" id="connection-banner" hidden>
+    <span id="connection-message"></span><span id="connection-age"></span>
+    <button class="btn sm" id="connection-retry"><span data-ic="arrows-rotate"></span>Retry</button>
+  </div>
   <main class="content" id="content"></main>
 </div>
 
